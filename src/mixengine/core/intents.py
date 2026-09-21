@@ -39,6 +39,8 @@ def _strength(value: Any, field_name: str) -> Optional[float]:
     """A strength is `auto`, `off`, or a number in [0, 1]."""
     if value is None or value == "auto" or value == "":
         return None
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be auto, off, or 0-1, got {value!r}")
     if isinstance(value, str):
         text = value.strip().lower()
         if text == "off":
@@ -48,7 +50,10 @@ def _strength(value: Any, field_name: str) -> Optional[float]:
         except ValueError:
             raise ValueError(
                 f"{field_name} must be auto, off, or 0-1, got {value!r}")
-    number = float(value)
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field_name} must be auto, off, or 0-1, got {value!r}")
     if not 0.0 <= number <= 1.0:
         raise ValueError(f"{field_name} must be within 0-1, got {number}")
     return number
@@ -58,6 +63,8 @@ def _number(value: Any, field_name: str,
             low: float, high: float) -> Optional[float]:
     if value is None or value == "auto" or value == "":
         return None
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a number, got {value!r}")
     try:
         number = float(value)
     except (TypeError, ValueError):

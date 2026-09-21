@@ -55,6 +55,21 @@ class TestIntents(unittest.TestCase):
         i = Intents.from_dict({"vocal_state": "raw", "space": "keep"})
         self.assertEqual(Intents.from_dict(i.to_dict()), i)
 
+    def test_rejects_list_as_strength_with_valueerror(self):
+        """Finding 1: list in strength should raise ValueError, not TypeError."""
+        with self.assertRaises(ValueError):
+            Intents.from_dict({"tune": [1, 2]})
+
+    def test_rejects_bool_as_strength(self):
+        """Finding 2: bool in strength should raise ValueError."""
+        with self.assertRaises(ValueError):
+            Intents.from_dict({"tune": True})
+
+    def test_rejects_bool_as_number(self):
+        """Finding 2: bool in number should raise ValueError."""
+        with self.assertRaises(ValueError):
+            Intents.from_dict({"bpm": True})
+
 
 if __name__ == "__main__":
     unittest.main()
