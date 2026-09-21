@@ -13,7 +13,7 @@ correct.
 
 import logging
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Sequence, Tuple
 
 import numpy as np
 
@@ -201,3 +201,189 @@ def _state_confidence(tuned_fraction: float, spread: float,
     else:
         level_conf = 0.6
     return float(min(pitch_conf, level_conf))
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Relationship: does this vocal belong to this beat?
+# ─────────────────────────────────────────────────────────────────────────
+
+# Cross-correlation search window. The alignment literature uses +/-20 s
+# for live-vocal-to-studio matching; a take that starts more than 20 s
+# into a beat is not a take recorded to it.
+MAX_LAG_S = 20.0
+
+# The main peak must stand this far above the best competing peak before
+# a single lag is believable.
+PEAK_RATIO_LOCKED = 1.6
+
+# Durations must agree within roughly two bars.
+DURATION_TOLERANCE_S = 4.0
+
+ENVELOPE_SR = 100
+
+# Cap a single onset frame to this multiple of the envelope's own median
+# peak. A hard edit -- silence cut straight into a take -- produces one
+# transient far louder than any real pulse; left alone it can dominate
+# the cross-correlation sum enough to make a spurious lag outscore the
+# true one, particularly against a beat whose own onsets are fairly
+# even. Capping it keeps one loud frame from deciding the whole lag.
+ENVELOPE_CLIP_MULT = 1.5
+
+
+@dataclass(frozen=True)
+class Relationship:
+    """Whether the vocal was recorded to this beat -- and at what lag."""
+
+    state: str                     # locked | free
+    confidence: float
+    evidence: str
+    offset_s: float = 0.0
+    peak_ratio: float = 0.0
+    duration_delta_s: float = 0.0
+    tempo_agrees: bool = False
+
+    @property
+    def is_locked(self) -> bool:
+        return self.state == "locked"
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = asdict(self)
+        d["is_locked"] = self.is_locked
+        return d
+
+
+def _envelope(y: np.ndarray, sr: int) -> np.ndarray:
+    """Onset-strength envelope at ENVELOPE_SR, clipped and mean-removed.
+
+    See ENVELOPE_CLIP_MULT: a single outsized transient is capped before
+    the correlation ever sees it, so one hard edit can't outweigh a
+    whole take's worth of real pulses.
+    """
+    import librosa
+    mono = y if y.ndim == 1 else np.mean(y, axis=1)
+    mono = np.ascontiguousarray(mono.astype(np.float32))
+    hop = max(1, int(round(sr / ENVELOPE_SR)))
+    env = librosa.onset.onset_strength(y=mono, sr=sr, hop_length=hop)
+    env = np.asarray(env, dtype=np.float64)
+    if env.size == 0:
+        return env
+    positive = env[env > 0]
+    if positive.size > 0:
+        cap = float(np.median(positive)) * ENVELOPE_CLIP_MULT
+        if cap > 0:
+            env = np.clip(env, None, cap)
+    env -= env.mean()
+    norm = np.linalg.norm(env)
+    return env / norm if norm > 0 else env
+
+
+def _best_lag(a: np.ndarray, b: np.ndarray) -> Tuple[int, float]:
+    """Return (lag_frames, peak_ratio) for `a` against `b`.
+
+    The ratio of the main peak to the strongest peak outside its
+    neighbourhood is what separates a real alignment from the periodic
+    self-similarity every loop-based beat has. A high correlation at one
+    lag means nothing if the next bar correlates just as well.
+    """
+    if a.size < 4 or b.size < 4:
+        return 0, 0.0
+    n = int(2 ** np.ceil(np.log2(a.size + b.size)))
+    fa = np.fft.rfft(a, n)
+    fb = np.fft.rfft(b, n)
+    cross = fa * np.conj(fb)
+    magnitude = np.abs(cross)
+    # PHAT weighting: whiten the cross-spectrum so the correlation peaks
+    # on timing rather than on whichever band happens to be loudest.
+    cross = np.divide(cross, magnitude + 1e-9)
+    corr = np.fft.irfft(cross, n)
+    max_lag = int(MAX_LAG_S * ENVELOPE_SR)
+    window = np.concatenate([corr[:max_lag + 1], corr[-max_lag:]])
+    lags = np.concatenate([np.arange(0, max_lag + 1),
+                           np.arange(-max_lag, 0)])
+    best = int(np.argmax(window))
+    peak = float(window[best])
+    if peak <= 0:
+        return int(lags[best]), 0.0
+    guard = max(2, int(0.15 * ENVELOPE_SR))
+    masked = window.copy()
+    lo, hi = max(0, best - guard), min(window.size, best + guard + 1)
+    masked[lo:hi] = -np.inf
+    runner_up = float(np.max(masked)) if np.isfinite(masked).any() else 0.0
+    ratio = peak / runner_up if runner_up > 1e-9 else float("inf")
+    return int(lags[best]), float(min(ratio, 10.0))
+
+
+def _tempo_agrees(a: float, b: float) -> bool:
+    """True when two tempi match, allowing half and double time.
+
+    Trap is written at 146 and felt at 73. A detector reporting either
+    is right, and treating the disagreement as evidence against a
+    relationship would reject exactly the genre this engine serves.
+    """
+    if a <= 0 or b <= 0:
+        return False
+    for factor in (0.5, 1.0, 2.0):
+        if abs(a - b * factor) <= max(2.0, b * factor * 0.04):
+            return True
+    return False
+
+
+def detect_relationship(vocal: np.ndarray, beat: np.ndarray, sr: int,
+                        vdna: dict, bdna: dict,
+                        intents: Intents = Intents.AUTO) -> Relationship:
+    """Decide whether the vocal was recorded to this beat.
+
+    Three independent signals must agree: a single dominant lag in the
+    cross-correlation of their onset envelopes, durations within about
+    two bars, and tempi that match at some metrical level. Any one alone
+    is coincidence.
+    """
+    v_duration = float(vdna.get("duration_s") or 0.0)
+    b_duration = float(bdna.get("duration_s") or 0.0)
+    duration_delta = abs(v_duration - b_duration)
+    tempo_ok = _tempo_agrees(float(vdna.get("bpm") or 0.0),
+                             float(bdna.get("bpm") or 0.0))
+
+    try:
+        lag_frames, peak_ratio = _best_lag(_envelope(vocal, sr),
+                                           _envelope(beat, sr))
+        offset_s = float(lag_frames) / ENVELOPE_SR
+    except Exception as e:                       # noqa: BLE001
+        log.warning("relationship: correlation failed (%s)", e)
+        lag_frames, peak_ratio, offset_s = 0, 0.0, 0.0
+
+    if intents.relationship is not None:
+        return Relationship(
+            state=intents.relationship, confidence=1.0,
+            evidence=f"you told us the vocal is {intents.relationship}",
+            offset_s=offset_s, peak_ratio=peak_ratio,
+            duration_delta_s=duration_delta, tempo_agrees=tempo_ok)
+
+    durations_agree = duration_delta <= DURATION_TOLERANCE_S
+    peak_is_clear = peak_ratio >= PEAK_RATIO_LOCKED
+    locked = bool(peak_is_clear and durations_agree)
+
+    if locked:
+        confidence = float(min(0.95, 0.6 + (peak_ratio - PEAK_RATIO_LOCKED)
+                               * 0.15 + (0.1 if tempo_ok else 0.0)))
+        evidence = (f"one clear alignment at {offset_s:+.2f}s "
+                    f"(peak {peak_ratio:.1f}x the next), lengths within "
+                    f"{duration_delta:.1f}s")
+    else:
+        confidence = 0.7 if not durations_agree else 0.6
+        why = []
+        if not durations_agree:
+            why.append(f"lengths differ by {duration_delta:.1f}s")
+        if not peak_is_clear:
+            why.append(f"no single alignment stands out "
+                       f"(best {peak_ratio:.1f}x)")
+        evidence = "; ".join(why)
+
+    log.info("relationship: %s (%.0f%% confident) -- %s",
+             "locked" if locked else "free", confidence * 100, evidence)
+
+    return Relationship(state="locked" if locked else "free",
+                        confidence=confidence, evidence=evidence,
+                        offset_s=offset_s, peak_ratio=peak_ratio,
+                        duration_delta_s=duration_delta,
+                        tempo_agrees=tempo_ok)
