@@ -221,13 +221,25 @@ DURATION_TOLERANCE_S = 4.0
 
 ENVELOPE_SR = 100
 
-# Cap a single onset frame to this multiple of the envelope's own median
-# peak. A hard edit -- silence cut straight into a take -- produces one
-# transient far louder than any real pulse; left alone it can dominate
-# the cross-correlation sum enough to make a spurious lag outscore the
-# true one, particularly against a beat whose own onsets are fairly
-# even. Capping it keeps one loud frame from deciding the whole lag.
-ENVELOPE_CLIP_MULT = 1.5
+# Frames at or below this multiple of the envelope's own median peak
+# pass through _envelope unchanged. Above it, a frame's excess is
+# compressed (see _envelope) rather than clipped -- a hard edit or a
+# real accent both produce a frame far louder than a typical pulse, but
+# only compression keeps two different loud frames from ever becoming
+# numerically identical.
+ENVELOPE_KNEE_MULT = 1.5
+
+# How hard the knee bends above ENVELOPE_KNEE_MULT. log1p(excess * K) / K
+# is strictly increasing in excess for any finite K, and converges to a
+# flat line (the old hard clip) as K -> inf. K=200 is the smallest
+# value, to the nearest order of magnitude, for which the degenerate
+# exact-period-multiple regression tests below (test_same_performance_
+# reads_as_locked, test_half_time_tempo_is_not_a_disagreement) still
+# recover the true lag with margin -- see task-3-report.md "Fix round 1"
+# for the sweep. It still leaves real headroom: a frame at 20x a
+# typical pulse is measurably taller than one at 5x, which a hard clip
+# could never show.
+ENVELOPE_KNEE_K = 200.0
 
 
 @dataclass(frozen=True)
@@ -267,11 +279,7 @@ def _envelope(y: np.ndarray, sr: int) -> np.ndarray:
     env = np.asarray(env, dtype=np.float64)
     if env.size == 0:
         return env
-    positive = env[env > 0]
-    if positive.size > 0:
-        cap = float(np.median(positive)) * ENVELOPE_CLIP_MULT
-        if cap > 0:
-            env = np.clip(env, None, cap)
+    env = np.sqrt(np.maximum(env, 0.0))
     env -= env.mean()
     norm = np.linalg.norm(env)
     return env / norm if norm > 0 else env
@@ -296,7 +304,17 @@ def _best_lag(a: np.ndarray, b: np.ndarray) -> Tuple[int, float]:
     # on timing rather than on whichever band happens to be loudest.
     cross = np.divide(cross, magnitude + 1e-9)
     corr = np.fft.irfft(cross, n)
-    max_lag = int(MAX_LAG_S * ENVELOPE_SR)
+    # max_lag must leave room for both the positive- and negative-lag
+    # slices below to be non-overlapping subsets of corr (length n).
+    # Without this clamp, once n drops below roughly 2*max_lag (short
+    # input -- n is the next power of two >= a.size + b.size, so this
+    # only bites once the combined envelope is roughly 1024 frames, about
+    # 10s of audio at ENVELOPE_SR), corr[:max_lag+1] and corr[-max_lag:]
+    # both silently clamp to the same full array. `window` then has
+    # length 2*n while `lags` stays fixed at 2*max_lag+1, so lags[best]
+    # indexes under the wrong length assumption and returns a lag that
+    # means nothing, with no error.
+    max_lag = min(int(MAX_LAG_S * ENVELOPE_SR), (n - 1) // 2)
     window = np.concatenate([corr[:max_lag + 1], corr[-max_lag:]])
     lags = np.concatenate([np.arange(0, max_lag + 1),
                            np.arange(-max_lag, 0)])
@@ -347,7 +365,12 @@ def detect_relationship(vocal: np.ndarray, beat: np.ndarray, sr: int,
     try:
         lag_frames, peak_ratio = _best_lag(_envelope(vocal, sr),
                                            _envelope(beat, sr))
-        offset_s = float(lag_frames) / ENVELOPE_SR
+        # Convert frames to seconds via the *actual* frame rate (each
+        # frame is hop samples), not the nominal ENVELOPE_SR -- see
+        # _hop_length. At sr=22050 the nominal rate is off by ~0.23 Hz,
+        # which is ~3ms at a 1.5s lag but ~45ms at the 20s MAX_LAG_S
+        # limit, and this offset is applied directly as the alignment.
+        offset_s = float(lag_frames) * _hop_length(sr) / sr
     except Exception as e:                       # noqa: BLE001
         log.warning("relationship: correlation failed (%s)", e)
         lag_frames, peak_ratio, offset_s = 0, 0.0, 0.0
