@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Sequence
 
 import numpy as np
 
+from ..audio import dsp
 from ..core.intents import Intents
 
 log = logging.getLogger("mixengine.intake")
@@ -96,7 +97,7 @@ def _tuned_fraction(notes: Sequence[dict]) -> float:
 
 def _crest_db(y: np.ndarray) -> float:
     """Peak minus RMS over the active part of the signal."""
-    mono = y if y.ndim == 1 else np.mean(y, axis=1)
+    mono = dsp.to_mono(y)
     active = mono[np.abs(mono) > (np.abs(mono).max() * 0.02 + 1e-9)]
     if active.size < 128:
         return 0.0
@@ -105,6 +106,22 @@ def _crest_db(y: np.ndarray) -> float:
     if rms <= 0 or peak <= 0:
         return 0.0
     return float(20.0 * np.log10(peak / rms))
+
+
+def _rt60_s(vdna: dict) -> float:
+    """RT60 estimate, wherever the DNA document happens to carry it.
+
+    Tests hand `detect_vocal_state` a document with the key at the top
+    level. `vocal_dna.py` nests the whole `AudioQuality` payload under
+    "quality", where real DNA documents carry it instead.
+    """
+    top = vdna.get("estimated_rt60_s")
+    if top is not None:
+        return float(top)
+    quality = vdna.get("quality")
+    if isinstance(quality, dict):
+        return float(quality.get("estimated_rt60_s") or 0.0)
+    return 0.0
 
 
 def detect_vocal_state(y: np.ndarray, sr: int, vdna: dict,
@@ -119,7 +136,7 @@ def detect_vocal_state(y: np.ndarray, sr: int, vdna: dict,
     notes: List[dict] = list(vdna.get("notes") or [])
     tuned_fraction = _tuned_fraction(notes)
     spread = float(vdna.get("phrase_level_spread_db") or 0.0)
-    rt60 = float(vdna.get("estimated_rt60_s") or 0.0)
+    rt60 = _rt60_s(vdna)
     crest = _crest_db(np.asarray(y))
 
     if intents.vocal_state is not None:

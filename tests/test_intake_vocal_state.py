@@ -16,7 +16,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from mixengine.analysis.intake import detect_vocal_state          # noqa: E402
+from mixengine.analysis.intake import _crest_db, detect_vocal_state  # noqa: E402
 from mixengine.core.intents import Intents                        # noqa: E402
 
 SR = 44100
@@ -108,6 +108,27 @@ class TestVocalState(unittest.TestCase):
         d = st.to_dict()
         self.assertIn("state", d)
         self.assertIsInstance(d["confidence"], float)
+
+    def test_rt60_read_from_nested_quality_location(self):
+        """Production DNA (vocal_dna.py) nests the AudioQuality payload
+        under "quality" with no top-level `estimated_rt60_s` key. RT60
+        must still be found there."""
+        tuned = [2, -3, 1, 4, -2, 0, 3, -1] * 4
+        dna = dna_with_notes(tuned, spread_db=0.97)
+        del dna["estimated_rt60_s"]
+        dna["quality"] = {"estimated_rt60_s": 0.77}
+        st = detect_vocal_state(signal(), SR, dna)
+        self.assertTrue(st.reverb_is_intentional)
+        self.assertEqual(st.rt60_s, 0.77)
+
+    def test_crest_db_handles_stereo_input(self):
+        """A stereo (n, 2) signal must downmix to a sensible crest factor,
+        not silently collapse to the `active.size < 128` guard's 0.0."""
+        mono_sig = signal()
+        stereo = np.stack([mono_sig, mono_sig], axis=1)
+        crest = _crest_db(stereo)
+        self.assertGreater(crest, 1.0)
+        self.assertAlmostEqual(crest, _crest_db(mono_sig), places=5)
 
 
 if __name__ == "__main__":
