@@ -71,12 +71,42 @@ class TestRelationshipOnRealAudio(unittest.TestCase):
 
     def test_unrelated_material_is_not_claimed_as_locked(self):
         """The failure that matters most: a false 'locked' skips every
-        correction a genuinely mismatched pair needs."""
+        correction a genuinely mismatched pair needs.
+
+        The DNA here is what an analyser actually reports for noise -- a
+        tempo unrelated to the beat's. Handing the detector a tempo copied
+        from the beat would be asserting the very thing under test.
+        """
         rng = np.random.default_rng(7)
         noise = rng.standard_normal(self.beat.shape).astype(np.float32) * 0.1
+        noise_dna = {"duration_s": len(self.beat) / self.sr, "bpm": 83.4}
         r = intake.detect_relationship(noise, self.beat, self.sr,
-                                       self.dna, self.dna)
+                                       noise_dna, self.dna)
         self.assertEqual(r.state, "free")
+
+    def test_a_shared_length_alone_is_not_enough(self):
+        """Two unrelated tracks can run the same length. Tempo has to
+        agree as well before the pair counts as one bounce."""
+        rng = np.random.default_rng(11)
+        other = rng.standard_normal(self.beat.shape).astype(np.float32) * 0.1
+        r = intake.detect_relationship(
+            other, self.beat, self.sr,
+            {"duration_s": len(self.beat) / self.sr, "bpm": 97.0}, self.dna)
+        self.assertEqual(r.state, "free")
+
+    def test_stems_from_one_bounce_are_locked_without_a_clear_peak(self):
+        """The case the engine got wrong on real files.
+
+        A rap acapella against its own instrumental has no dominant
+        correlation peak -- the envelopes are too different in density.
+        Matching length and tempo is what identifies the pair, and the
+        offset is zero because stems start together.
+        """
+        voc = dsp.highpass(self.beat, self.sr, 300.0, order=4)
+        r = intake.detect_relationship(voc, self.beat, self.sr,
+                                       self.dna, self.dna)
+        self.assertEqual(r.state, "locked")
+        self.assertAlmostEqual(r.offset_s, 0.0, delta=0.02)
 
     def test_a_length_mismatch_is_not_locked(self):
         half = self.beat[:len(self.beat) // 2]

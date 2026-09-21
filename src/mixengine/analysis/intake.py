@@ -214,11 +214,27 @@ def _state_confidence(tuned_fraction: float, spread: float,
 MAX_LAG_S = 20.0
 
 # The main peak must stand this far above the best competing peak before
-# a single lag is believable.
+# a single lag is believable on its own.
 PEAK_RATIO_LOCKED = 1.6
+
+# A lower bar for *using* the measured lag once the pair is known to be
+# related by other evidence. Declaring two files related on a marginal
+# peak would be a guess; reading the lag off that same peak, when they are
+# already known to belong together, is just a measurement. Below this the
+# correlation is noise and zero is the better answer.
+PEAK_RATIO_USABLE = 1.35
 
 # Durations must agree within roughly two bars.
 DURATION_TOLERANCE_S = 4.0
+
+# Tighter than a performance ever matches by chance: two files this close
+# in length came out of the same bounce, not the same taste in tempo.
+SAME_BOUNCE_DURATION_S = 0.25
+
+# Detected tempo agreement at this precision is not a coincidence either.
+# Trackers reading two unrelated files land on round-ish numbers that
+# differ by tenths; the same timeline gives the same hundredths.
+SAME_BOUNCE_BPM = 0.5
 
 ENVELOPE_SR = 100
 
@@ -377,6 +393,53 @@ def _tempo_agrees(a: float, b: float) -> bool:
     return False
 
 
+def _vocal_tempo(vdna: dict, beat_bpm: float) -> Tuple[float, str]:
+    """The vocal's tempo, including readings it declined to commit to.
+
+    A take whose estimators disagree reports `bpm: 0` and "no stable
+    tempo" -- the analyser is right to refuse a single answer, but the
+    individual readings are still evidence and it keeps them. On the take
+    that prompted this, the headline was 0 while the autocorrelation said
+    146.34 against a 146.34 BPM beat, and throwing that away is what left
+    the pair looking unrelated.
+
+    Candidates are preferred in order of how directly they measure
+    period, and a candidate matching the beat wins: among several
+    readings of an ambiguous take, the one that agrees with the beat it
+    was cut over is the one describing the same timeline.
+    """
+    est = vdna.get("bpm_estimators") or {}
+    candidates = [
+        (float(vdna.get("bpm") or 0.0), "bpm"),
+        (float(vdna.get("bpm_detected") or 0.0), "detected"),
+        (float(est.get("autocorrelation") or 0.0), "autocorrelation"),
+        (float(est.get("histogram") or 0.0), "histogram"),
+    ]
+    for alt in (vdna.get("bpm_alternates") or []):
+        try:
+            candidates.append((float(alt), "alternate"))
+        except (TypeError, ValueError):
+            continue
+
+    live = [(v, s) for v, s in candidates if v > 0]
+    for value, source in live:
+        if _tempo_matches_exactly(value, beat_bpm):
+            return value, source
+    return live[0] if live else (0.0, "none")
+
+
+def _tempo_matches_exactly(a: float, b: float) -> bool:
+    """True when two tempi agree to within `SAME_BOUNCE_BPM`.
+
+    Half and double time count: trap is written at 146 and felt at 73,
+    and a vocal tracker reading the syllable rate rather than the kick
+    lands on the other one. Either reading describes the same timeline.
+    """
+    if a <= 0 or b <= 0:
+        return False
+    return any(abs(a - b * f) <= SAME_BOUNCE_BPM for f in (0.5, 1.0, 2.0))
+
+
 def detect_relationship(vocal: np.ndarray, beat: np.ndarray, sr: int,
                         vdna: dict, bdna: dict,
                         intents: Intents = Intents.AUTO) -> Relationship:
@@ -415,14 +478,46 @@ def detect_relationship(vocal: np.ndarray, beat: np.ndarray, sr: int,
 
     durations_agree = duration_delta <= DURATION_TOLERANCE_S
     peak_is_clear = peak_ratio >= PEAK_RATIO_LOCKED
-    locked = bool(peak_is_clear and durations_agree)
+
+    # Two stems exported from the same session agree on length and tempo to
+    # a precision nothing else reaches. A vocal and a beat that share a
+    # duration to a hundredth of a second and a tempo to a hundredth of a
+    # BPM were bounced from one timeline, whatever the onset correlation
+    # says -- and for a rap take it often says very little, because a
+    # sparse syllabic envelope against a dense 808 pattern has no dominant
+    # peak to find. Requiring the correlation to agree is what made the
+    # engine call a genuine pair "free" and then quantise a performance
+    # that was already in time.
+    b_bpm = float(bdna.get("bpm") or 0.0)
+    v_bpm, v_bpm_src = _vocal_tempo(vdna, b_bpm)
+    same_bounce = bool(duration_delta <= SAME_BOUNCE_DURATION_S
+                       and _tempo_matches_exactly(v_bpm, b_bpm))
+
+    locked = bool(same_bounce or (peak_is_clear and durations_agree))
+
+    if same_bounce and peak_ratio < PEAK_RATIO_USABLE:
+        # Bounced together, and the envelopes give no trustworthy lag: a
+        # sparse syllabic envelope against a dense 808 pattern correlates
+        # at roughly chance however it is weighted. Stems from one
+        # timeline start together, so zero is the honest answer -- and on
+        # the take that prompted this it is also the one the beat's own
+        # grid agrees with.
+        offset_s = 0.0
 
     if locked:
-        confidence = float(min(0.95, 0.6 + (peak_ratio - PEAK_RATIO_LOCKED)
-                               * 0.15 + (0.1 if tempo_ok else 0.0)))
-        evidence = (f"one clear alignment at {offset_s:+.2f}s "
-                    f"(peak {peak_ratio:.1f}x the next), lengths within "
-                    f"{duration_delta:.1f}s")
+        if same_bounce:
+            confidence = 0.9
+            evidence = (f"same length to {duration_delta * 1000:.0f} ms and "
+                        f"same tempo ({v_bpm:.2f} vs {b_bpm:.2f} BPM) -- "
+                        f"bounced from one session")
+            if peak_is_clear:
+                evidence += f", aligned at {offset_s:+.2f}s"
+        else:
+            confidence = float(min(0.95, 0.6 + (peak_ratio - PEAK_RATIO_LOCKED)
+                                   * 0.15 + (0.1 if tempo_ok else 0.0)))
+            evidence = (f"one clear alignment at {offset_s:+.2f}s "
+                        f"(peak {peak_ratio:.1f}x the next), lengths within "
+                        f"{duration_delta:.1f}s")
     else:
         confidence = 0.7 if not durations_agree else 0.6
         why = []

@@ -149,8 +149,12 @@ class TestRelationship(unittest.TestCase):
         beat = np.concatenate([np.zeros(int(1.0 * SR), dtype=np.float32),
                                content[:int(3.0 * SR)]]).astype(np.float32)
         vocal = content
+        # Tempi deliberately differ: matching length *and* tempo marks a
+        # pair as two stems of one bounce, which answers the lag as zero
+        # without consulting the correlation. This test is about the
+        # correlation, so the pair must not qualify for that shortcut.
         r = detect_relationship(vocal, beat, SR,
-                                dna(4.0, 120.0), dna(4.0, 120.0))
+                                dna(4.0, 137.0), dna(4.0, 120.0))
         self.assertAlmostEqual(r.offset_s, -1.0, delta=0.1)
 
     def test_long_lag_offset_matches_actual_frame_rate(self):
