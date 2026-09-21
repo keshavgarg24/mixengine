@@ -13,12 +13,13 @@ correct.
 
 import logging
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 from ..audio import dsp
 from ..core.intents import Intents
+from ..core.keys import Key, best_shift, parse_key
 
 log = logging.getLogger("mixengine.intake")
 
@@ -264,22 +265,52 @@ class Relationship:
         return d
 
 
-def _envelope(y: np.ndarray, sr: int) -> np.ndarray:
-    """Onset-strength envelope at ENVELOPE_SR, clipped and mean-removed.
+def _hop_length(sr: int) -> int:
+    """Samples per envelope frame, rounded.
 
-    See ENVELOPE_CLIP_MULT: a single outsized transient is capped before
-    the correlation ever sees it, so one hard edit can't outweigh a
-    whole take's worth of real pulses.
+    sr / ENVELOPE_SR is rarely exact (220 at sr=22050, not 220.5), so
+    the envelope's *actual* frame rate is sr / hop, not ENVELOPE_SR.
+    _envelope and the frame-to-seconds conversion in detect_relationship
+    both need this same value, or their notions of "one frame" drift
+    apart.
+    """
+    return max(1, int(round(sr / ENVELOPE_SR)))
+
+
+def _envelope(y: np.ndarray, sr: int) -> np.ndarray:
+    """Onset-strength envelope at ENVELOPE_SR, compressed and mean-removed.
+
+    Onset strength is unbounded above: a hard digital edit in test audio
+    and a genuine accent -- a hard consonant, a slapped snare -- both
+    produce a frame far louder than a typical pulse, often several times
+    the envelope's own median. A hard ceiling treats every frame above it
+    identically, which is fine for an artifact but wrong for a transient:
+    it is precisely the tallest, cleanest transients that give a
+    cross-correlation its sharpest peak, and flattening them to one
+    shared value throws that away.
+
+    Frames at or below ENVELOPE_KNEE_MULT times the envelope's own
+    median peak pass through unchanged. Above it, the excess is
+    compressed with log1p (scaled by ENVELOPE_KNEE_K) instead of
+    clipped -- log1p is strictly increasing, so a taller transient always
+    produces a taller, if compressed, value. Two different loud frames
+    are never tied the way a hard clip ties them.
     """
     import librosa
     mono = y if y.ndim == 1 else np.mean(y, axis=1)
     mono = np.ascontiguousarray(mono.astype(np.float32))
-    hop = max(1, int(round(sr / ENVELOPE_SR)))
+    hop = _hop_length(sr)
     env = librosa.onset.onset_strength(y=mono, sr=sr, hop_length=hop)
     env = np.asarray(env, dtype=np.float64)
     if env.size == 0:
         return env
-    env = np.sqrt(np.maximum(env, 0.0))
+    positive = env[env > 0]
+    if positive.size > 0:
+        knee = float(np.median(positive)) * ENVELOPE_KNEE_MULT
+        if knee > 0:
+            excess = np.maximum(env - knee, 0.0)
+            env = np.minimum(env, knee) + \
+                np.log1p(excess * ENVELOPE_KNEE_K) / ENVELOPE_KNEE_K
     env -= env.mean()
     norm = np.linalg.norm(env)
     return env / norm if norm > 0 else env
@@ -410,3 +441,175 @@ def detect_relationship(vocal: np.ndarray, beat: np.ndarray, sr: int,
                         offset_s=offset_s, peak_ratio=peak_ratio,
                         duration_delta_s=duration_delta,
                         tempo_agrees=tempo_ok)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Key: a distribution, not a label
+# ─────────────────────────────────────────────────────────────────────────
+
+# Below this, a key estimate is not strong enough to transpose against.
+KEY_CONFIDENCE_TO_TRANSPOSE = 0.55
+
+# Below this, the tuner gets the union scale rather than a forced third.
+KEY_CONFIDENCE_TO_NARROW = 0.45
+
+
+@dataclass(frozen=True)
+class KeyDecision:
+    """Which key to work in, and whether to move the vocal at all."""
+
+    key: Optional["Key"]
+    semitone_shift: int
+    confidence: float
+    evidence: str
+    families_agree: bool = False
+    scale_pcs: Tuple[int, ...] = ()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"key": self.key.to_dict() if self.key else None,
+                "semitone_shift": self.semitone_shift,
+                "confidence": round(float(self.confidence), 3),
+                "evidence": self.evidence,
+                "families_agree": self.families_agree,
+                "scale_pcs": list(self.scale_pcs)}
+
+
+def _family_root(key: "Key") -> int:
+    """The relative-major root, so a key and its relative share a value.
+
+    A minor key and its relative major contain the same seven pitch
+    classes. A detector choosing between them is choosing a label, not a
+    different set of notes, and the engine must not transpose across that
+    choice.
+    """
+    return key.pc if key.mode == "major" else (key.pc + 3) % 12
+
+
+def _related(a: "Key", b: "Key") -> bool:
+    """True when two keys are the same family or a fifth apart.
+
+    Relative major/minor share all seven notes. A fifth relationship --
+    C# minor over a G# minor beat -- is the ordinary dominant pairing and
+    needs no transposition either. Anything further apart is a real key
+    difference.
+    """
+    if _family_root(a) == _family_root(b):
+        return True
+    gap = (_family_root(a) - _family_root(b)) % 12
+    return gap in (5, 7)
+
+
+def decide_key(vdna: dict, bdna: dict,
+               intents: Intents = Intents.AUTO) -> KeyDecision:
+    """Reconcile the vocal's and the beat's key estimates.
+
+    Key detectors disagree on roughly 60% of tracks, almost always by a
+    relative-major/minor or fifth swap. Taking each side's top label and
+    comparing them throws away the agreement that is usually sitting one
+    row down: on the reference render the vocal read C# Minor and the
+    beat G# Major, but the beat's own second candidate was G# Minor --
+    the dominant of the vocal's key, and no transposition at all.
+
+    So both candidate lists are searched for the best-scoring compatible
+    pair, and confidence is reported as measured rather than asserted.
+    """
+    v_key = Key.from_dict(vdna.get("key"))
+    b_key = Key.from_dict(bdna.get("key"))
+    v_conf = float(vdna.get("key_confidence") or 0.0)
+    b_conf = float(bdna.get("key_confidence") or 0.0)
+
+    if intents.key is not None:
+        stated = parse_key(intents.key)
+        if stated is not None:
+            return KeyDecision(
+                key=stated, semitone_shift=0, confidence=1.0,
+                evidence="you told us the key is %s" % stated.name,
+                families_agree=True, scale_pcs=tuple(stated.scale_pcs))
+        log.warning("could not parse stated key %r; measuring instead",
+                    intents.key)
+
+    if v_key is None and b_key is None:
+        return KeyDecision(None, 0, 0.0, "no key could be established")
+    if v_key is None and b_key is not None:
+        return KeyDecision(b_key, 0, b_conf,
+                           "only the beat has a key (%s)" % b_key,
+                           True, tuple(b_key.scale_pcs))
+    assert v_key is not None
+    if b_key is None:
+        return KeyDecision(v_key, 0, v_conf,
+                           "only the vocal has a key (%s)" % v_key,
+                           True, tuple(v_key.scale_pcs))
+
+    pair = _best_compatible_pair(vdna, bdna, v_key, b_key)
+    if pair is not None:
+        v_cand, b_cand, score = pair
+        # The mode comes from the vocal: a sung line states its third, a
+        # bassline does not.
+        chosen = Key(v_cand.pc, v_cand.mode)
+        evidence = ("vocal %s and beat %s are compatible; taking the mode "
+                    "from the vocal, no transposition" % (v_cand, b_cand))
+        scale = tuple(chosen.scale_pcs)
+        if score < KEY_CONFIDENCE_TO_NARROW:
+            scale = tuple(sorted(set(v_cand.scale_pcs) | set(b_cand.scale_pcs)))
+            evidence += ("; both estimates are uncertain, so the tuner gets "
+                         "the full shared scale")
+        return KeyDecision(chosen, 0, score, evidence, True, scale)
+
+    if v_conf < KEY_CONFIDENCE_TO_TRANSPOSE or \
+            b_conf < KEY_CONFIDENCE_TO_TRANSPOSE:
+        scale = tuple(sorted(set(v_key.scale_pcs) | set(b_key.scale_pcs)))
+        return KeyDecision(
+            v_key, 0, float(min(v_conf, b_conf)),
+            "vocal %s and beat %s disagree but at least one estimate is "
+            "uncertain (vocal %.2f, beat %.2f); rendering without a "
+            "transposition" % (v_key, b_key, v_conf, b_conf),
+            False, scale)
+
+    shift, _ = best_shift(v_key, b_key)
+    return KeyDecision(
+        b_key, int(shift), float(min(v_conf, b_conf)),
+        "vocal %s and beat %s are in different keys; shifting the vocal "
+        "%+d semitones" % (v_key, b_key, shift),
+        False, tuple(b_key.scale_pcs))
+
+
+def _candidates(dna: dict, top: "Key", conf: float) -> List[Tuple["Key", float]]:
+    """A key's candidate list as (Key, score), best first.
+
+    Falls back to the single reported key when no candidate list survived
+    analysis, so callers never have to special-case the shape.
+    """
+    out: List[Tuple["Key", float]] = []
+    for entry in (dna.get("key_candidates") or []):
+        try:
+            name, score = entry[0], float(entry[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        parsed = parse_key(name)
+        if parsed is not None:
+            out.append((parsed, score))
+    if not out:
+        out = [(top, conf)]
+    return out
+
+
+def _best_compatible_pair(vdna: dict, bdna: dict, v_key: "Key", b_key: "Key"):
+    """Highest-scoring (vocal, beat) candidate pair that needs no transpose.
+
+    Scored as the product of the two candidates' own scores, so a strong
+    agreement one row down beats a weak agreement at the top.
+    """
+    best = None
+    best_score = 0.0
+    for v_cand, v_score in _candidates(vdna, v_key, 0.0):
+        for b_cand, b_score in _candidates(bdna, b_key, 0.0):
+            if not _related(v_cand, b_cand):
+                continue
+            score = float(v_score) * float(b_score)
+            if score > best_score:
+                best, best_score = (v_cand, b_cand), score
+    if best is None:
+        return None
+    # Report the geometric mean: a score comparable to the inputs' own
+    # confidences rather than the product, which is always smaller.
+    return best[0], best[1], float(best_score ** 0.5)

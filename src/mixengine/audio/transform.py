@@ -406,14 +406,17 @@ def warp_phrases_to_grid(vocal: np.ndarray, sr: int,
 
 def fit_beat_to_vocal(beat: np.ndarray, sr: int, target_len: int,
                       downbeats_s: np.ndarray,
-                      sections: Optional[List[dict]] = None
+                      sections: Optional[List[dict]] = None,
+                      plan: Optional[Any] = None
                       ) -> Tuple[np.ndarray, dict]:
     """Trim or loop the beat to cover the vocal, always on bar boundaries.
 
     Cutting mid-bar is the most obvious tell of an automated edit, so every
     boundary here snaps to a downbeat. When the beat is too short, a
     musically coherent section is looped rather than the whole file
-    repeated.
+    repeated -- and when the plan says the beat already covers the vocal,
+    the shortfall is the render's own reverb tail and is padded with
+    silence rather than filled with a repeat of the intro.
     """
     b = dsp.as_2d(beat)
     report = {"action": "none", "original_len_s": round(len(b) / sr, 2),
@@ -432,6 +435,17 @@ def fit_beat_to_vocal(beat: np.ndarray, sr: int, target_len: int,
         report.update({"action": "trimmed_to_bar",
                        "result_len_s": round(cut / sr, 2)})
         return dsp.fade(out, sr, 0.001, 0.05), report
+
+    # Too short. If the plan says only a tail is missing, pad it: the
+    # shortfall is the render's own reverb decay, not missing music.
+    # Looping here is what discarded 133 of a beat's 147 seconds and
+    # repeated its first 14 ten times under a vocal it already covered.
+    if plan is not None and getattr(plan, "beat_fit", None) is not None \
+            and plan.beat_fit.method == "pad":
+        report.update({"action": "padded",
+                       "result_len_s": round(target_len / sr, 2),
+                       "reason": plan.beat_fit.reason})
+        return dsp.pad_to(b, target_len), report
 
     # Too short: loop a section.
     loop_start, loop_end = _choose_loop(b, sr, downbeats_s, sections)
@@ -457,10 +471,16 @@ def fit_beat_to_vocal(beat: np.ndarray, sr: int, target_len: int,
 
 def _choose_loop(b: np.ndarray, sr: int, downbeats_s: np.ndarray,
                  sections: Optional[List[dict]]) -> Tuple[int, int]:
-    """Pick a bar-aligned, musically sensible loop region."""
+    """Pick a bar-aligned, musically sensible loop region.
+
+    Search from the end. A beat's last full section is written to sit
+    under a final chorus and loops without announcing itself; its intro
+    is written to arrive once, and repeating it is the most audible edit
+    the engine can make.
+    """
     if sections:
         for label in ("chorus", "verse"):
-            for s in sections:
+            for s in reversed(sections):
                 if s.get("label") == label:
                     a, z = int(s["start"] * sr), int(s["end"] * sr)
                     if z - a > sr * 4:
@@ -468,6 +488,5 @@ def _choose_loop(b: np.ndarray, sr: int, downbeats_s: np.ndarray,
     grid = np.asarray(downbeats_s, dtype=np.float64) * sr
     grid = grid[(grid >= 0) & (grid < len(b))]
     if len(grid) >= 9:
-        return int(grid[max(0, len(grid) // 4)]), int(grid[min(len(grid) - 1,
-                                                              len(grid) // 4 + 8)])
+        return int(grid[max(0, len(grid) - 9)]), int(grid[len(grid) - 1])
     return 0, len(b)

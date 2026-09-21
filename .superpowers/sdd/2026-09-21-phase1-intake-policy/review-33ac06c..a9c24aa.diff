@@ -1,0 +1,162 @@
+# Review package: 33ac06c..HEAD
+
+## Commits
+a9c24aa Fix RT60 lookup and mono downmix in vocal state intake
+
+## Files changed
+ src/mixengine/analysis/intake.py | 21 +++++++++++++++++++--
+ tests/test_intake_vocal_state.py | 23 ++++++++++++++++++++++-
+ 2 files changed, 41 insertions(+), 3 deletions(-)
+
+## Diff
+diff --git a/src/mixengine/analysis/intake.py b/src/mixengine/analysis/intake.py
+index e0622ec..396ee00 100644
+--- a/src/mixengine/analysis/intake.py
++++ b/src/mixengine/analysis/intake.py
+@@ -10,20 +10,21 @@ Every detector reports a value, a confidence, and the evidence behind
+ it, because a decision the user cannot see is a decision they cannot
+ correct.
+ """
+ 
+ import logging
+ from dataclasses import asdict, dataclass
+ from typing import Any, Dict, List, Sequence
+ 
+ import numpy as np
+ 
++from ..audio import dsp
+ from ..core.intents import Intents
+ 
+ log = logging.getLogger("mixengine.intake")
+ 
+ # A note within this many cents of a semitone centre reads as deliberate.
+ # Antares' Flex-Tune calls 50-100 "significantly off"; Melodyne leaves
+ # notes "already quite close" alone. 20 cents is inside both.
+ TUNED_WINDOW_CENTS = 20.0
+ 
+ # Below this fraction of note time on the grid, the take is raw.
+@@ -89,44 +90,60 @@ def _tuned_fraction(notes: Sequence[dict]) -> float:
+             continue
+         cents = abs(((float(midi) + 0.5) % 1.0) - 0.5) * 100.0
+         total += duration
+         if cents <= TUNED_WINDOW_CENTS:
+             on_grid += duration
+     return float(on_grid / total) if total > 0 else 0.0
+ 
+ 
+ def _crest_db(y: np.ndarray) -> float:
+     """Peak minus RMS over the active part of the signal."""
+-    mono = y if y.ndim == 1 else np.mean(y, axis=1)
++    mono = dsp.to_mono(y)
+     active = mono[np.abs(mono) > (np.abs(mono).max() * 0.02 + 1e-9)]
+     if active.size < 128:
+         return 0.0
+     rms = float(np.sqrt(np.mean(active ** 2)))
+     peak = float(np.abs(active).max())
+     if rms <= 0 or peak <= 0:
+         return 0.0
+     return float(20.0 * np.log10(peak / rms))
+ 
+ 
++def _rt60_s(vdna: dict) -> float:
++    """RT60 estimate, wherever the DNA document happens to carry it.
++
++    Tests hand `detect_vocal_state` a document with the key at the top
++    level. `vocal_dna.py` nests the whole `AudioQuality` payload under
++    "quality", where real DNA documents carry it instead.
++    """
++    top = vdna.get("estimated_rt60_s")
++    if top is not None:
++        return float(top)
++    quality = vdna.get("quality")
++    if isinstance(quality, dict):
++        return float(quality.get("estimated_rt60_s") or 0.0)
++    return 0.0
++
++
+ def detect_vocal_state(y: np.ndarray, sr: int, vdna: dict,
+                        intents: Intents = Intents.AUTO) -> VocalState:
+     """Decide whether a take is raw, tuned, or finished.
+ 
+     Ambiguity resolves toward the more finished state. Treating a raw
+     take as finished yields a flat render the user can ask more of;
+     treating a finished take as raw destroys work that cannot be
+     recovered.
+     """
+     notes: List[dict] = list(vdna.get("notes") or [])
+     tuned_fraction = _tuned_fraction(notes)
+     spread = float(vdna.get("phrase_level_spread_db") or 0.0)
+-    rt60 = float(vdna.get("estimated_rt60_s") or 0.0)
++    rt60 = _rt60_s(vdna)
+     crest = _crest_db(np.asarray(y))
+ 
+     if intents.vocal_state is not None:
+         return VocalState(
+             state=intents.vocal_state, confidence=1.0,
+             evidence=f"you told us the vocal is {intents.vocal_state}",
+             tuned_fraction=tuned_fraction, crest_db=crest,
+             phrase_spread_db=spread, rt60_s=rt60,
+             reverb_is_intentional=(intents.vocal_state != "raw"
+                                    and rt60 > RT60_NOTABLE_S),
+diff --git a/tests/test_intake_vocal_state.py b/tests/test_intake_vocal_state.py
+index 6e6f085..cfad12a 100644
+--- a/tests/test_intake_vocal_state.py
++++ b/tests/test_intake_vocal_state.py
+@@ -9,21 +9,21 @@ the signal if the question is asked.
+ """
+ 
+ import os
+ import sys
+ import unittest
+ 
+ import numpy as np
+ 
+ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+ 
+-from mixengine.analysis.intake import detect_vocal_state          # noqa: E402
++from mixengine.analysis.intake import _crest_db, detect_vocal_state  # noqa: E402
+ from mixengine.core.intents import Intents                        # noqa: E402
+ 
+ SR = 44100
+ 
+ 
+ def dna_with_notes(cents_offsets, spread_db=4.0, rt60=0.2,
+                    deviation_cents=None):
+     """A vocal DNA document whose notes sit at given cent offsets."""
+     notes = []
+     t = 0.0
+@@ -102,13 +102,34 @@ class TestVocalState(unittest.TestCase):
+     def test_too_few_notes_is_low_confidence_not_a_guess(self):
+         st = detect_vocal_state(signal(), SR, dna_with_notes([1, 2, 3]))
+         self.assertLess(st.confidence, 0.5)
+ 
+     def test_report_is_serialisable(self):
+         st = detect_vocal_state(signal(), SR, dna_with_notes([2, -3, 1, 4]))
+         d = st.to_dict()
+         self.assertIn("state", d)
+         self.assertIsInstance(d["confidence"], float)
+ 
++    def test_rt60_read_from_nested_quality_location(self):
++        """Production DNA (vocal_dna.py) nests the AudioQuality payload
++        under "quality" with no top-level `estimated_rt60_s` key. RT60
++        must still be found there."""
++        tuned = [2, -3, 1, 4, -2, 0, 3, -1] * 4
++        dna = dna_with_notes(tuned, spread_db=0.97)
++        del dna["estimated_rt60_s"]
++        dna["quality"] = {"estimated_rt60_s": 0.77}
++        st = detect_vocal_state(signal(), SR, dna)
++        self.assertTrue(st.reverb_is_intentional)
++        self.assertEqual(st.rt60_s, 0.77)
++
++    def test_crest_db_handles_stereo_input(self):
++        """A stereo (n, 2) signal must downmix to a sensible crest factor,
++        not silently collapse to the `active.size < 128` guard's 0.0."""
++        mono_sig = signal()
++        stereo = np.stack([mono_sig, mono_sig], axis=1)
++        crest = _crest_db(stereo)
++        self.assertGreater(crest, 1.0)
++        self.assertAlmostEqual(crest, _crest_db(mono_sig), places=5)
++
+ 
+ if __name__ == "__main__":
+     unittest.main()

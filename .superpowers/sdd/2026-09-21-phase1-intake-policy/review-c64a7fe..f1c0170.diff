@@ -1,0 +1,312 @@
+# Review package: c64a7fe..HEAD
+
+## Commits
+f1c0170 Fix relationship-detection lag search: monotonic compression, short-input length mismatch, frame-rate drift
+
+## Files changed
+ src/mixengine/analysis/intake.py  | 89 +++++++++++++++++++++++++++++++--------
+ tests/test_intake_relationship.py | 74 ++++++++++++++++++++++++++++++++
+ 2 files changed, 145 insertions(+), 18 deletions(-)
+
+## Diff
+diff --git a/src/mixengine/analysis/intake.py b/src/mixengine/analysis/intake.py
+index bb8d9f3..5b0d947 100644
+--- a/src/mixengine/analysis/intake.py
++++ b/src/mixengine/analysis/intake.py
+@@ -214,27 +214,39 @@ MAX_LAG_S = 20.0
+ 
+ # The main peak must stand this far above the best competing peak before
+ # a single lag is believable.
+ PEAK_RATIO_LOCKED = 1.6
+ 
+ # Durations must agree within roughly two bars.
+ DURATION_TOLERANCE_S = 4.0
+ 
+ ENVELOPE_SR = 100
+ 
+-# Cap a single onset frame to this multiple of the envelope's own median
+-# peak. A hard edit -- silence cut straight into a take -- produces one
+-# transient far louder than any real pulse; left alone it can dominate
+-# the cross-correlation sum enough to make a spurious lag outscore the
+-# true one, particularly against a beat whose own onsets are fairly
+-# even. Capping it keeps one loud frame from deciding the whole lag.
+-ENVELOPE_CLIP_MULT = 1.5
++# Frames at or below this multiple of the envelope's own median peak
++# pass through _envelope unchanged. Above it, a frame's excess is
++# compressed (see _envelope) rather than clipped -- a hard edit or a
++# real accent both produce a frame far louder than a typical pulse, but
++# only compression keeps two different loud frames from ever becoming
++# numerically identical.
++ENVELOPE_KNEE_MULT = 1.5
++
++# How hard the knee bends above ENVELOPE_KNEE_MULT. log1p(excess * K) / K
++# is strictly increasing in excess for any finite K, and converges to a
++# flat line (the old hard clip) as K -> inf. K=200 is the smallest
++# value, to the nearest order of magnitude, for which the degenerate
++# exact-period-multiple regression tests below (test_same_performance_
++# reads_as_locked, test_half_time_tempo_is_not_a_disagreement) still
++# recover the true lag with margin -- see task-3-report.md "Fix round 1"
++# for the sweep. It still leaves real headroom: a frame at 20x a
++# typical pulse is measurably taller than one at 5x, which a hard clip
++# could never show.
++ENVELOPE_KNEE_K = 200.0
+ 
+ 
+ @dataclass(frozen=True)
+ class Relationship:
+     """Whether the vocal was recorded to this beat -- and at what lag."""
+ 
+     state: str                     # locked | free
+     confidence: float
+     evidence: str
+     offset_s: float = 0.0
+@@ -245,40 +257,66 @@ class Relationship:
+     @property
+     def is_locked(self) -> bool:
+         return self.state == "locked"
+ 
+     def to_dict(self) -> Dict[str, Any]:
+         d = asdict(self)
+         d["is_locked"] = self.is_locked
+         return d
+ 
+ 
+-def _envelope(y: np.ndarray, sr: int) -> np.ndarray:
+-    """Onset-strength envelope at ENVELOPE_SR, clipped and mean-removed.
++def _hop_length(sr: int) -> int:
++    """Samples per envelope frame, rounded.
++
++    sr / ENVELOPE_SR is rarely exact (220 at sr=22050, not 220.5), so
++    the envelope's *actual* frame rate is sr / hop, not ENVELOPE_SR.
++    _envelope and the frame-to-seconds conversion in detect_relationship
++    both need this same value, or their notions of "one frame" drift
++    apart.
++    """
++    return max(1, int(round(sr / ENVELOPE_SR)))
+ 
+-    See ENVELOPE_CLIP_MULT: a single outsized transient is capped before
+-    the correlation ever sees it, so one hard edit can't outweigh a
+-    whole take's worth of real pulses.
++
++def _envelope(y: np.ndarray, sr: int) -> np.ndarray:
++    """Onset-strength envelope at ENVELOPE_SR, compressed and mean-removed.
++
++    Onset strength is unbounded above: a hard digital edit in test audio
++    and a genuine accent -- a hard consonant, a slapped snare -- both
++    produce a frame far louder than a typical pulse, often several times
++    the envelope's own median. A hard ceiling treats every frame above it
++    identically, which is fine for an artifact but wrong for a transient:
++    it is precisely the tallest, cleanest transients that give a
++    cross-correlation its sharpest peak, and flattening them to one
++    shared value throws that away.
++
++    Frames at or below ENVELOPE_KNEE_MULT times the envelope's own
++    median peak pass through unchanged. Above it, the excess is
++    compressed with log1p (scaled by ENVELOPE_KNEE_K) instead of
++    clipped -- log1p is strictly increasing, so a taller transient always
++    produces a taller, if compressed, value. Two different loud frames
++    are never tied the way a hard clip ties them.
+     """
+     import librosa
+     mono = y if y.ndim == 1 else np.mean(y, axis=1)
+     mono = np.ascontiguousarray(mono.astype(np.float32))
+-    hop = max(1, int(round(sr / ENVELOPE_SR)))
++    hop = _hop_length(sr)
+     env = librosa.onset.onset_strength(y=mono, sr=sr, hop_length=hop)
+     env = np.asarray(env, dtype=np.float64)
+     if env.size == 0:
+         return env
+     positive = env[env > 0]
+     if positive.size > 0:
+-        cap = float(np.median(positive)) * ENVELOPE_CLIP_MULT
+-        if cap > 0:
+-            env = np.clip(env, None, cap)
++        knee = float(np.median(positive)) * ENVELOPE_KNEE_MULT
++        if knee > 0:
++            excess = np.maximum(env - knee, 0.0)
++            env = np.minimum(env, knee) + \
++                np.log1p(excess * ENVELOPE_KNEE_K) / ENVELOPE_KNEE_K
+     env -= env.mean()
+     norm = np.linalg.norm(env)
+     return env / norm if norm > 0 else env
+ 
+ 
+ def _best_lag(a: np.ndarray, b: np.ndarray) -> Tuple[int, float]:
+     """Return (lag_frames, peak_ratio) for `a` against `b`.
+ 
+     The ratio of the main peak to the strongest peak outside its
+     neighbourhood is what separates a real alignment from the periodic
+@@ -289,21 +327,31 @@ def _best_lag(a: np.ndarray, b: np.ndarray) -> Tuple[int, float]:
+         return 0, 0.0
+     n = int(2 ** np.ceil(np.log2(a.size + b.size)))
+     fa = np.fft.rfft(a, n)
+     fb = np.fft.rfft(b, n)
+     cross = fa * np.conj(fb)
+     magnitude = np.abs(cross)
+     # PHAT weighting: whiten the cross-spectrum so the correlation peaks
+     # on timing rather than on whichever band happens to be loudest.
+     cross = np.divide(cross, magnitude + 1e-9)
+     corr = np.fft.irfft(cross, n)
+-    max_lag = int(MAX_LAG_S * ENVELOPE_SR)
++    # max_lag must leave room for both the positive- and negative-lag
++    # slices below to be non-overlapping subsets of corr (length n).
++    # Without this clamp, once n drops below roughly 2*max_lag (short
++    # input -- n is the next power of two >= a.size + b.size, so this
++    # only bites once the combined envelope is roughly 1024 frames, about
++    # 10s of audio at ENVELOPE_SR), corr[:max_lag+1] and corr[-max_lag:]
++    # both silently clamp to the same full array. `window` then has
++    # length 2*n while `lags` stays fixed at 2*max_lag+1, so lags[best]
++    # indexes under the wrong length assumption and returns a lag that
++    # means nothing, with no error.
++    max_lag = min(int(MAX_LAG_S * ENVELOPE_SR), (n - 1) // 2)
+     window = np.concatenate([corr[:max_lag + 1], corr[-max_lag:]])
+     lags = np.concatenate([np.arange(0, max_lag + 1),
+                            np.arange(-max_lag, 0)])
+     best = int(np.argmax(window))
+     peak = float(window[best])
+     if peak <= 0:
+         return int(lags[best]), 0.0
+     guard = max(2, int(0.15 * ENVELOPE_SR))
+     masked = window.copy()
+     lo, hi = max(0, best - guard), min(window.size, best + guard + 1)
+@@ -340,21 +388,26 @@ def detect_relationship(vocal: np.ndarray, beat: np.ndarray, sr: int,
+     """
+     v_duration = float(vdna.get("duration_s") or 0.0)
+     b_duration = float(bdna.get("duration_s") or 0.0)
+     duration_delta = abs(v_duration - b_duration)
+     tempo_ok = _tempo_agrees(float(vdna.get("bpm") or 0.0),
+                              float(bdna.get("bpm") or 0.0))
+ 
+     try:
+         lag_frames, peak_ratio = _best_lag(_envelope(vocal, sr),
+                                            _envelope(beat, sr))
+-        offset_s = float(lag_frames) / ENVELOPE_SR
++        # Convert frames to seconds via the *actual* frame rate (each
++        # frame is hop samples), not the nominal ENVELOPE_SR -- see
++        # _hop_length. At sr=22050 the nominal rate is off by ~0.23 Hz,
++        # which is ~3ms at a 1.5s lag but ~45ms at the 20s MAX_LAG_S
++        # limit, and this offset is applied directly as the alignment.
++        offset_s = float(lag_frames) * _hop_length(sr) / sr
+     except Exception as e:                       # noqa: BLE001
+         log.warning("relationship: correlation failed (%s)", e)
+         lag_frames, peak_ratio, offset_s = 0, 0.0, 0.0
+ 
+     if intents.relationship is not None:
+         return Relationship(
+             state=intents.relationship, confidence=1.0,
+             evidence=f"you told us the vocal is {intents.relationship}",
+             offset_s=offset_s, peak_ratio=peak_ratio,
+             duration_delta_s=duration_delta, tempo_agrees=tempo_ok)
+diff --git a/tests/test_intake_relationship.py b/tests/test_intake_relationship.py
+index ac33866..70fd084 100644
+--- a/tests/test_intake_relationship.py
++++ b/tests/test_intake_relationship.py
+@@ -32,20 +32,40 @@ def pulse_train(seconds, period_s, sr=SR, seed=0, jitter=0.0):
+         if 0 <= idx < n:
+             y[idx:idx + 64] = 1.0
+         t += period_s
+     return y + rng.standard_normal(n).astype(np.float32) * 0.01
+ 
+ 
+ def dna(duration, bpm):
+     return {"duration_s": duration, "bpm": bpm}
+ 
+ 
++def pulse_train_with_accents(seconds, period_s, accent_times, accent_amp,
++                             bed_amp=1.0, sr=SR, seed=0):
++    """A regular pulse train with a few pulses boosted to accent_amp --
++    a quiet, regular bed plus a handful of genuinely loud transients."""
++    rng = np.random.default_rng(seed)
++    n = int(seconds * sr)
++    y = np.zeros(n, dtype=np.float32)
++    t = 0.0
++    while t < seconds:
++        idx = int(t * sr)
++        if 0 <= idx < n:
++            y[idx:idx + 64] = bed_amp
++        t += period_s
++    for at in accent_times:
++        idx = int(at * sr)
++        if 0 <= idx < n - 64:
++            y[idx:idx + 64] = accent_amp
++    return y + rng.standard_normal(n).astype(np.float32) * 0.01
++
++
+ class TestRelationship(unittest.TestCase):
+ 
+     def test_same_performance_reads_as_locked(self):
+         beat = pulse_train(20.0, 0.5)
+         vocal = np.concatenate([np.zeros(int(1.5 * SR), dtype=np.float32),
+                                 beat[:int(18.5 * SR)]])
+         r = detect_relationship(vocal, beat, SR,
+                                 dna(20.0, 120.0), dna(20.0, 120.0))
+         self.assertEqual(r.state, "locked")
+         self.assertAlmostEqual(r.offset_s, 1.5, delta=0.05)
+@@ -88,13 +108,67 @@ class TestRelationship(unittest.TestCase):
+         r = detect_relationship(vocal, beat, SR,
+                                 dna(20.0, 162.0), dna(20.0, 120.0))
+         self.assertIsInstance(r.offset_s, float)
+ 
+     def test_report_is_serialisable(self):
+         beat = pulse_train(10.0, 0.5)
+         r = detect_relationship(beat, beat, SR, dna(10.0, 120.0),
+                                 dna(10.0, 120.0))
+         self.assertIn("state", r.to_dict())
+ 
++    # -- Fix round 1 regression tests -----------------------------------
++
++    def test_loud_transients_over_a_quiet_bed_recover_the_lag(self):
++        """A hard clip maps every frame above its cap to the identical
++        value -- it cannot tell a 2x-median accent from a 20x-median
++        one. This bed's own period is a divisor of the lag, so its bulk
++        correlation is close to tied against period-multiple decoys;
++        only the three accented pulses (20x the bed's own amplitude)
++        resolve which lag is true. The two 20s clips are sliced from a
++        shared 30s source starting 5s in, so neither carries a
++        digital-silence edge the way the other fixtures in this file
++        do -- the accents are the only landmark available.
++        """
++        source = pulse_train_with_accents(30.0, 0.5, [8.0, 11.7, 15.4],
++                                          accent_amp=20.0, seed=100)
++        beat = source[int(5.0 * SR):int(25.0 * SR)]
++        vocal = source[int(6.5 * SR):int(26.5 * SR)]
++        r = detect_relationship(vocal, beat, SR,
++                                dna(20.0, 120.0), dna(20.0, 120.0))
++        self.assertEqual(r.state, "locked")
++        self.assertAlmostEqual(r.offset_s, -1.5, delta=0.1)
++
++    def test_short_pair_recovers_correct_lag(self):
++        """`_best_lag` built `lags` at a fixed length (from MAX_LAG_S)
++        but sliced `corr` -- whose length shrinks with input -- to the
++        same fixed bounds; numpy clamps a too-large slice instead of
++        raising, so short input silently indexed `lags` under the wrong
++        length assumption. A 4s pair is well inside the regime where
++        that mismatch used to bite (roughly audio under ~10s combined).
++        """
++        content = pulse_train(4.0, 0.4, seed=2)
++        beat = np.concatenate([np.zeros(int(1.0 * SR), dtype=np.float32),
++                               content[:int(3.0 * SR)]]).astype(np.float32)
++        vocal = content
++        r = detect_relationship(vocal, beat, SR,
++                                dna(4.0, 120.0), dna(4.0, 120.0))
++        self.assertAlmostEqual(r.offset_s, -1.0, delta=0.1)
++
++    def test_long_lag_offset_matches_actual_frame_rate(self):
++        """hop = round(sr / ENVELOPE_SR) is 220 at sr=22050 -- an actual
++        frame rate of ~100.23 Hz, not the nominal 100. Converting frames
++        to seconds with the nominal rate drifts by about 0.23% of the
++        lag itself: negligible at a fraction of a second, but ~18ms by
++        8s here (and ~45ms at the 20s MAX_LAG_S limit), which this
++        tolerance is tight enough to catch.
++        """
++        beat = pulse_train(20.0, 0.5)
++        vocal = np.concatenate([np.zeros(int(8.0 * SR), dtype=np.float32),
++                                beat[:int(12.0 * SR)]]).astype(np.float32)
++        r = detect_relationship(vocal, beat, SR,
++                                dna(20.0, 120.0), dna(20.0, 120.0))
++        self.assertEqual(r.state, "locked")
++        self.assertAlmostEqual(r.offset_s, 8.0, delta=0.01)
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
