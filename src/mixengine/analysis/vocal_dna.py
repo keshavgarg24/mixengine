@@ -280,9 +280,11 @@ def extract(path: str,
     dna["beat_requirements"] = build_requirements(dna)
     dna["summary"] = human_summary(dna)
 
-    log.info("  %s | %s | %.0f BPM (%s) | %d notes | %d phrases | %.1fs",
+    log.info("  %s | %s | %.0f BPM (%s) | %d notes | %d phrases | %.1fs "
+             "(analysed in %.0fs)",
              vocal_id, dna["key"]["name"] if dna["key"] else "key unknown",
-             bpm, bpm_src, len(notes), len(phrases), dna["analysis_seconds"])
+             bpm, bpm_src, len(notes), len(phrases), dna["duration_s"],
+             dna["analysis_seconds"])
     return dna
 
 

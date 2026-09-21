@@ -23,7 +23,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
@@ -83,12 +83,18 @@ def classify_vocal_input(y: np.ndarray, sr: int) -> VocalInputType:
                  + min(perc_ratio / 0.35, 1.0) * 0.35
                  + min(active / 4.5, 1.0) * 0.25)
 
-        if score > 0.62:
+        if score > 0.75:
             return VocalInputType("full_mix", float(score), True,
                                   f"instrumental content detected (score {score:.2f})")
+        # Bleed is reported but does not by itself justify separation.
+        # Demucs costs minutes and rewrites the take; spending that on a
+        # coin-flip reading is how a clean vocal got separated on a score
+        # of 0.56. The threshold matches `policy.SEPARATION_CONFIDENCE`,
+        # and `separate=always` remains available when the call is wrong.
         if score > 0.32:
-            return VocalInputType("light_bleed", float(score), True,
-                                  f"background bleed detected (score {score:.2f})")
+            return VocalInputType("light_bleed", float(score), False,
+                                  f"background bleed detected (score {score:.2f}) "
+                                  f"-- not enough to justify separating")
         return VocalInputType("clean_acapella", float(1.0 - score), False,
                               f"clean isolated vocal (score {score:.2f})")
     except Exception as e:
@@ -155,6 +161,12 @@ def _separate_roformer(path: str, out_dir: str,
         return {}
 
 
+# Accelerators that could not run the separator in this process. Remembered
+# so the second file goes straight to the CPU rather than paying for the
+# same failure again.
+_UNUSABLE_DEVICES: Set[str] = set()
+
+
 def _separate_demucs(path: str, out_dir: str,
                      model_name: str = "htdemucs") -> Dict[str, str]:
     """Demucs 4-stem separation.
@@ -174,6 +186,7 @@ def _separate_demucs(path: str, out_dir: str,
         # fails outright ("output channels > 65536 not supported") -- and
         # a failed accelerator run must cost a retry, not the stems.
         devices = [CAPS.device, "cpu"] if CAPS.device != "cpu" else ["cpu"]
+        devices = [d for d in devices if d not in _UNUSABLE_DEVICES] or ["cpu"]
         proc = None
         for device in devices:
             log.info("running demucs on %s (%s) ...", os.path.basename(path), device)
@@ -181,6 +194,8 @@ def _separate_demucs(path: str, out_dir: str,
                                   text=True, timeout=3600)
             if proc.returncode == 0:
                 break
+            if device != "cpu":
+                _UNUSABLE_DEVICES.add(device)
             tail = (proc.stderr or "").strip().splitlines()
             log.log(logging.INFO if device != devices[-1] else logging.WARNING,
                     "demucs on %s exited %d: %s", device, proc.returncode,
@@ -341,12 +356,165 @@ def dereverb(y: np.ndarray, sr: int, strength: float = 0.5) -> np.ndarray:
     return out.astype(np.float32)
 
 
-def condition_vocal(y: np.ndarray, sr: int, quality) -> Tuple[np.ndarray, dict]:
+HUM_MIN_EXCESS_DB = 10.0
+# Fewer quiet frames than this and the median spectrum is too rough to
+# tell a line from chance: with four frames a white-noise bin can sit
+# 14 dB over its neighbours by luck; with sixteen the worst bin sits ~6.
+HUM_MIN_QUIET_FRAMES = 16
+# A line under this level is not heard, whatever it clears; it is the
+# numerical floor of a digitally silent gap, not a hum.
+HUM_MIN_LEVEL_DB = -80.0
+# The quiet frames must be gaps -- this much under the loud frames -- or
+# there is nothing to measure the hum against: on a take with no gaps
+# (a drone, a pad, a test tone) every frame holds the voice and the
+# voice itself would read as the line.
+HUM_GAP_CONTRAST_DB = 6.0
+HUM_MAX_LINES = 8
+HUM_BAND_HZ = (40.0, 8000.0)
+
+
+def find_hum(y: np.ndarray, sr: int) -> List[Tuple[float, float]]:
+    """Spectral lines that stand out of the take's own background.
+
+    Mains hum and its harmonics, a fridge, a fan motor's whine: a line
+    that sits `HUM_MIN_EXCESS_DB` over its neighbourhood in the median
+    spectrum of the quietest fifth of the frames. Measured on the quiet
+    frames only, so a held note can never be mistaken for one. Returns
+    `(frequency_hz, excess_db)` pairs, strongest first.
+    """
+    mono = dsp.to_mono(y).astype(np.float64)
+    n_fft = 8192
+    if len(mono) < n_fft * 3:
+        return []
+    from scipy import signal as sps
+    freqs, _, Z = sps.stft(mono, fs=sr, nperseg=n_fft, noverlap=n_fft // 2,
+                           window="hann")
+    mag = np.abs(Z)
+    # Power per frame, not summed magnitude: a single line's power is a
+    # fair share of a frame, its magnitude one bin in four thousand.
+    energy = (mag ** 2).sum(axis=0)
+    quiet = energy <= np.percentile(energy, 20)
+    if quiet.sum() < HUM_MIN_QUIET_FRAMES:
+        return []
+    loud_db = dsp.lin_to_db(np.median(energy[~quiet])) if (~quiet).any() else -np.inf
+    if loud_db - dsp.lin_to_db(np.median(energy[quiet])) < HUM_GAP_CONTRAST_DB:
+        return []
+    spec_db = dsp.lin_to_db(np.median(mag[:, quiet], axis=1))
+    # Neighbourhood: a running median about 200 Hz wide.
+    width = max(5, int(200.0 / (freqs[1] - freqs[0])) | 1)
+    from scipy.ndimage import median_filter
+    baseline = median_filter(spec_db, size=width, mode="nearest")
+    excess = spec_db - baseline
+    lo, hi = HUM_BAND_HZ
+    band = (freqs >= lo) & (freqs <= hi)
+    audible = spec_db >= HUM_MIN_LEVEL_DB
+    peaks, props = sps.find_peaks(np.where(band & audible, excess, -np.inf),
+                                  height=HUM_MIN_EXCESS_DB, distance=3)
+    # Refine each line between bins: the notch is 6 Hz wide at 150 Hz and
+    # a line placed half a bin off it is only two-thirds removed.
+    df = float(freqs[1] - freqs[0])
+    lines = []
+    for k, height in zip(peaks.tolist(), props["peak_heights"].tolist()):
+        f = float(freqs[k])
+        if 0 < k < len(spec_db) - 1:
+            a, b, c = spec_db[k - 1], spec_db[k], spec_db[k + 1]
+            denom = a - 2.0 * b + c
+            if denom < 0:
+                f += df * float(np.clip(0.5 * (a - c) / denom, -0.5, 0.5))
+        lines.append((f, float(height)))
+    lines.sort(key=lambda t: -t[1])
+    return [(round(f, 1), round(e, 1)) for f, e in lines[:HUM_MAX_LINES]]
+
+
+def remove_hum(y: np.ndarray, sr: int) -> Tuple[np.ndarray, List[Tuple[float, float]]]:
+    """Notch every line `find_hum` reports. A no-op on a take with none."""
+    lines = find_hum(y, sr)
+    if not lines:
+        return y, lines
+    out = dsp.as_2d(y)
+    for f, _ in lines:
+        out = dsp.notch(out, sr, f)
+    out = out.astype(np.float32)
+    return (out[:, 0] if np.ndim(y) == 1 else out), lines
+
+
+GAP_GATE_SNR_DB = 25.0
+GAP_GATE_MIN_S = 0.30
+GAP_GATE_FADE_S = 0.03
+
+
+def mute_between_phrases(y: np.ndarray, sr: int,
+                         phrases: Sequence[Tuple[int, int]],
+                         min_gap_s: float = GAP_GATE_MIN_S,
+                         fade_s: float = GAP_GATE_FADE_S) -> np.ndarray:
+    """Silence the gaps between phrases, with short fades inside each gap.
+
+    Restoration lowers a noise floor; it does not remove one. On a take
+    whose noise sat within 14 dB of the voice, the floor left after the
+    separator and subtraction was still audible in every gap, and the
+    mixer's make-up gain then brought it up. Between the lines nothing
+    was performed, so nothing is lost by silencing it; the fades stay
+    inside the gap so the phrase edges the detector padded are untouched.
+    Meant for noisy takes only -- on a clean one the gaps are already
+    quiet and a breath the detector missed would be cut.
+    """
+    out = dsp.as_2d(y).copy()
+    n = len(out)
+    if n == 0:
+        return out
+    shaped = (lambda a: a[:, 0]) if np.ndim(y) == 1 else (lambda a: a)
+    fade = max(1, int(fade_s * sr))
+    ramp = 0.5 - 0.5 * np.cos(np.linspace(0.0, np.pi, fade))  # 0 -> 1
+    edges = [(0, 0)] + [(int(s), int(e)) for s, e in sorted(phrases)] + [(n, n)]
+    for (_, prev_end), (next_start, _) in zip(edges[:-1], edges[1:]):
+        gap_start, gap_end = max(0, prev_end), min(n, next_start)
+        if gap_end - gap_start < int(min_gap_s * sr):
+            continue
+        out[gap_start:gap_end] = 0.0
+        # Fade out after the previous phrase, fade in before the next.
+        if prev_end > 0:
+            seg = min(fade, gap_end - gap_start)
+            out[gap_start:gap_start + seg] = (
+                dsp.as_2d(y)[gap_start:gap_start + seg] * (1.0 - ramp[:seg])[:, None])
+        if next_start < n:
+            seg = min(fade, gap_end - gap_start)
+            out[gap_end - seg:gap_end] = (
+                dsp.as_2d(y)[gap_end - seg:gap_end] * ramp[-seg:][:, None])
+    return shaped(out.astype(np.float32))
+
+
+SEPARATOR_DENOISE_SNR_DB = 15.0
+
+
+def _separator_denoise(y: np.ndarray, sr: int) -> Optional[np.ndarray]:
+    """The stem separator's vocal stem, used as a denoiser.
+
+    Spectral subtraction tops out around 11 dB and buys it with musical
+    noise; on a take whose fan noise sat 6 dB under the voice it left the
+    noise audible and the mixer's make-up gain then lifted it. The
+    separator was trained to keep a voice and discard everything that is
+    not one, and measured on that take it dropped the floor 12 dB while
+    leaving a clean take untouched to 0.03 dB. None if no stem came back.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, "vocal.wav")
+        audio_io.save(src, y, sr)
+        vpath = separate(src, tmp, want="vocals").get("vocals")
+        if not vpath or not os.path.exists(vpath):
+            return None
+        out, _, _ = audio_io.load(vpath, sr=sr)
+    out = dsp.as_2d(out)[:len(y)]
+    return dsp.pad_to(out, len(y)).astype(np.float32)
+
+
+def condition_vocal(y: np.ndarray, sr: int, quality,
+                    separated: bool = False) -> Tuple[np.ndarray, dict]:
     """Full restoration chain, applied only where measurement says it's needed.
 
     Returns `(audio, report)`. Every step is conditional: a clean studio
     take passes through almost untouched, while a noisy phone recording in
-    a live room gets the full treatment.
+    a live room gets the full treatment. `separated` says the take already
+    came out of the separator, which is then not run a second time.
     """
     report: Dict[str, Any] = {"denoise": False, "dereverb": False, "highpass": False}
     out = dsp.as_2d(y)
@@ -354,6 +522,30 @@ def condition_vocal(y: np.ndarray, sr: int, quality) -> Tuple[np.ndarray, dict]:
     # Rumble below 55 Hz is never useful on a vocal.
     out = dsp.highpass(out, sr, 55.0, order=2)
     report["highpass"] = True
+
+    # Spectral lines -- hum and its harmonics, a motor's whine -- are a
+    # notch each, and cheaper to take out here than to leave for the
+    # broadband stages, which spread their cost over the whole voice.
+    out, hum = remove_hum(out, sr)
+    if hum:
+        report["hum_lines_hz"] = [f for f, _ in hum]
+        log.info("  notched %d spectral line(s): %s",
+                 len(hum), ", ".join("%.0f Hz (+%.0f dB)" % t for t in hum))
+        quality = audio_io.probe_quality(out, sr)
+
+    # Noise the voice barely clears is beyond subtraction. Let the
+    # separator take it out, then measure again so the rest of the chain
+    # works on what is left rather than on the input's numbers.
+    if quality.snr_db < SEPARATOR_DENOISE_SNR_DB and not separated \
+            and CAPS.can_separate:
+        cleaned = _separator_denoise(out, sr)
+        if cleaned is not None:
+            out = cleaned
+            quality = audio_io.probe_quality(out, sr)
+            report["separator_denoise"] = True
+            report["snr_after_separator_db"] = round(float(quality.snr_db), 1)
+            log.info("  separator took the noise floor to %.1f dB (snr %.1f dB)",
+                     quality.noise_floor_db, quality.snr_db)
 
     if quality.snr_db < 26.0:
         strength = float(np.clip((26.0 - quality.snr_db) / 22.0, 0.2, 0.85))
