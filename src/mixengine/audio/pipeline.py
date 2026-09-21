@@ -17,7 +17,7 @@ import shutil
 import time
 import zlib
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -68,6 +68,49 @@ class RenderResult:
         }
 
 
+
+
+def _build_plan(vocal_audio: np.ndarray, beat_audio: np.ndarray, sr: int,
+                vdna: dict, bdna: dict, intents: Optional[Any] = None):
+    """Decide what this render may touch, before any stage runs.
+
+    Falls back to no plan -- every stage deciding for itself, as before --
+    if intake raises. A detector failing should cost the render its
+    restraint, not the render itself.
+    """
+    from ..analysis import intake
+    from ..core.intents import Intents
+    from ..core.policy import plan as build_policy
+
+    ints = intents if intents is not None else Intents.AUTO
+    try:
+        state = intake.detect_vocal_state(vocal_audio, sr, vdna, ints)
+        rel = intake.detect_relationship(vocal_audio, beat_audio, sr,
+                                         vdna, bdna, ints)
+        key = intake.decide_key(vdna, bdna, ints)
+        return build_policy(vdna, bdna, state, rel, key, ints)
+    except Exception as e:                                   # noqa: BLE001
+        log.warning("intake failed (%s); every stage will decide for itself", e)
+        return None
+
+
+def _apply_offset(v: np.ndarray, sr: int, offset_s: float) -> np.ndarray:
+    """Slide the take by a measured lag, positive meaning later.
+
+    The lag intake measured is relative to the beat's own start, so a
+    positive value means the vocal entered after it and must be padded
+    at the head. Trimming is capped at what is there, so a negative lag
+    larger than the lead-in cannot run off the front of the array.
+    """
+    n = int(round(float(offset_s) * sr))
+    if n == 0:
+        return v
+    if n > 0:
+        pad = np.zeros((n, v.shape[1]), dtype=v.dtype)
+        return np.vstack([pad, v])
+    return v[min(-n, len(v)):]
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # Single render
 # ═════════════════════════════════════════════════════════════════════════════
@@ -77,8 +120,15 @@ def render_variant(vocal_audio: np.ndarray, sr: int, vdna: dict,
                    variant: VariantSpec, out_path: str,
                    beat_audio: Optional[np.ndarray] = None,
                    stems: Optional[Dict[str, np.ndarray]] = None,
-                   extra_overrides: Optional[dict] = None) -> RenderResult:
-    """Render one (vocal, beat, variant) combination."""
+                   extra_overrides: Optional[dict] = None,
+                   render_plan: Optional[Any] = None) -> RenderResult:
+    """Render one (vocal, beat, variant) combination.
+
+    `render_plan` is a `core.policy.RenderPlan` deciding what each stage
+    may do. When it is absent every stage falls back to deciding for
+    itself, which is the behaviour that retuned a finished vocal toward
+    the wrong key and looped a beat's intro under it.
+    """
     t0 = time.time()
     o = dict(variant.overrides)
     if extra_overrides:
@@ -92,6 +142,8 @@ def render_variant(vocal_audio: np.ndarray, sr: int, vdna: dict,
                           beat_title=bdna.get("title") or bdna.get("beat_id", "?"),
                           match_score=match.score)
     tinfo: Dict = {}
+    if render_plan is not None:
+        tinfo["plan"] = render_plan.to_dict()
 
     # ── Load the beat if not provided ─────────────────────────────────────
     if beat_audio is None:
@@ -170,7 +222,19 @@ def render_variant(vocal_audio: np.ndarray, sr: int, vdna: dict,
     # shift of up to four seconds applied afterwards moves all of them off
     # again by exactly that amount. Coarse first, fine last -- the stage
     # with the most precise information must have the final say.
-    v, align_info = transform.align_to_downbeat(v, sr, phrases, downbeats_s, beats_s)
+    # A take recorded to this beat is already placed. Searching for a
+    # downbeat to snap its first phrase to would move it off the position
+    # it was performed at; the lag intake measured is the whole answer.
+    if render_plan is not None and \
+            render_plan.alignment.method == "single_offset":
+        v = _apply_offset(v, sr, float(render_plan.offset_s))
+        align_info = {"method": "measured_offset",
+                      "offset_s": round(float(render_plan.offset_s), 4),
+                      "note": render_plan.alignment.reason}
+        log.info("  placement: %s", render_plan.alignment.reason)
+    else:
+        v, align_info = transform.align_to_downbeat(
+            v, sr, phrases, downbeats_s, beats_s)
     tinfo["alignment"] = align_info
     phrases = analysis.detect_phrases(v, sr)
 
@@ -178,10 +242,17 @@ def render_variant(vocal_audio: np.ndarray, sr: int, vdna: dict,
     # Chord-aware rather than scale-aware. A note is judged against what is
     # actually sounding underneath it, gestures are left alone, and the
     # blues degrees are protected in the genres that depend on them.
-    tune_strength = max(0.0, profile.tune_strength + float(o.get("tune_strength", 0.0)))
     perf = vdna.get("performance_type", "sung")
-    if perf == "rap":
-        tune_strength = 0.0            # tuning a rap vocal sounds wrong
+    if render_plan is not None:
+        tune_strength = (render_plan.tuning.strength
+                         if render_plan.tuning.enabled else 0.0)
+        if tune_strength <= 0.02:
+            log.info("  tuning: skipped -- %s", render_plan.tuning.reason)
+    else:
+        tune_strength = max(0.0, profile.tune_strength
+                            + float(o.get("tune_strength", 0.0)))
+        if perf == "rap":
+            tune_strength = 0.0        # tuning a rap vocal sounds wrong
     if tune_strength > 0.02:
         voice = vdna.get("voice") or {}
         harm_ctx = tuning.HarmonicContext.from_beat_dna(
@@ -205,12 +276,30 @@ def render_variant(vocal_audio: np.ndarray, sr: int, vdna: dict,
     time_ctx.phrases = [Phrase(start=s / sr, end=e / sr,
                                start_sample=int(s), end_sample=int(e))
                         for s, e in phrases]
-    q_strength = float(o.get("quantize_strength", 0.0))
-    genre_strength = groove_mod.quantize_strength(
-        bdna.get("genre"), perf,
-        grid_consistency=float(bdna.get("grid_stability") or 0.0))
-    q_strength = max(q_strength, genre_strength)
-    aligned = False
+    # A take recorded to this beat is already in time with it. The only
+    # thing to establish is the lag, which intake already measured; moving
+    # onsets after that is correcting the performer's pocket, which is
+    # what shifted 520 of 678 onsets against a 24 ms "error" that was the
+    # artist's feel.
+    if render_plan is not None and \
+            render_plan.alignment.method == "single_offset":
+        log.info("  timing: %s", render_plan.alignment.reason)
+        tinfo["align"] = {"enabled": True, "method": "single_offset",
+                          "offset_s": round(float(render_plan.offset_s), 4),
+                          "moved": 0,
+                          "reason": render_plan.alignment.reason}
+        aligned = True
+        q_strength = 0.0
+    else:
+        q_strength = (render_plan.alignment.strength
+                      if render_plan is not None
+                      else float(o.get("quantize_strength", 0.0)))
+        genre_strength = groove_mod.quantize_strength(
+            bdna.get("genre"), perf,
+            grid_consistency=float(bdna.get("grid_stability") or 0.0))
+        if render_plan is None:
+            q_strength = max(q_strength, genre_strength)
+        aligned = False
     if q_strength > 0.02 and len(beats_s) > 2:
         onsets = analysis.detect_onsets(v, sr)
         # Variable-rate first. A monotonic onset-to-slot assignment plus one
@@ -238,14 +327,17 @@ def render_variant(vocal_audio: np.ndarray, sr: int, vdna: dict,
     stability = float(bdna.get("grid_stability") or 0.0)
     v, warp_info = transform.warp_phrases_to_grid(
         v, sr, phrases, downbeats_s,
-        enabled=(not aligned and stability > 0.6 and len(downbeats_s) > 3))
+        enabled=(not aligned and stability > 0.6 and len(downbeats_s) > 3
+                 and (render_plan is None
+                      or render_plan.alignment.method != "single_offset")))
     tinfo["warp"] = warp_info
     phrases = analysis.detect_phrases(v, sr)
 
     # ── 7. Fit the beat to the vocal ──────────────────────────────────────
     target_len = len(v) + int(sr * 1.5)
     beat_audio, fit_info = transform.fit_beat_to_vocal(
-        beat_audio, sr, target_len, downbeats_s, bdna.get("sections"))
+        beat_audio, sr, target_len, downbeats_s, bdna.get("sections"),
+        plan=render_plan)
     tinfo["beat_fit"] = fit_info
     if stems:
         stems = {k: dsp.pad_to(s, len(beat_audio)) for k, s in stems.items()}
@@ -499,7 +591,8 @@ def run(vocal_path: str, catalog: Sequence[dict], out_dir: str,
         n_beats: int = 3, variants_per_beat: int = 1,
         user_bpm: Optional[float] = None, user_key: Optional[str] = None,
         vdna: Optional[dict] = None,
-        beat_ids: Optional[Sequence[str]] = None) -> dict:
+        beat_ids: Optional[Sequence[str]] = None,
+        intents: Optional[Any] = None) -> dict:
     """Upload to finished songs.
 
     `n_beats` x `variants_per_beat` renders are produced. The default (3
@@ -581,13 +674,19 @@ def run(vocal_path: str, catalog: Sequence[dict], out_dir: str,
         if stems:
             log.info("  using %d stems for %s", len(stems), m.beat_id)
 
+        # What may this render touch? Decided once, from the audio and
+        # the user's stated intents, before any stage runs.
+        render_plan = _build_plan(vocal_audio, beat_audio, sr, vdna, bdna,
+                                  intents)
+
         for variant in variants:
             name = f"{vdna['vocal_id']}__{m.beat_id}__{variant.key}.wav"
             out_path = os.path.join(out_dir, name)
             attempt_path = os.path.join(out_dir, f".repair__{name}")
             try:
                 r = render_variant(vocal_audio, sr, vdna, bdna, m, variant,
-                                   out_path, beat_audio=beat_audio, stems=stems)
+                                   out_path, beat_audio=beat_audio,
+                                   stems=stems, render_plan=render_plan)
             except Exception as e:
                 log.exception("render failed for %s/%s: %s", m.beat_id, variant.key, e)
                 # Record the failure instead of dropping it. The engine's
@@ -619,7 +718,8 @@ def run(vocal_path: str, catalog: Sequence[dict], out_dir: str,
                 try:
                     r = render_variant(vocal_audio, sr, vdna, bdna, m, variant,
                                        attempt_path, beat_audio=beat_audio,
-                                       stems=stems, extra_overrides=cumulative)
+                                       stems=stems, extra_overrides=cumulative,
+                                       render_plan=render_plan)
                 except Exception as e:
                     log.warning("repair render failed: %s", e)
                     break
