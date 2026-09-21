@@ -1,0 +1,11 @@
+# Superseded by pyproject.toml, which is the single source of truth for
+# dependencies. Kept only so that `pip install -r requirements.txt` does
+# something sensible for anyone who reaches for it out of habit.
+#
+# The real install is:
+#     pip install -e ".[quality,stretch,web]"
+#
+# This file previously named boto, pymongo and pyrubberband — none of which
+# the engine imports any more.
+
+-e .[quality,web]

@@ -1,0 +1,28 @@
+# virtualenvs
+.venv/
+venv/
+.venv-*/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# engine data — audio, analysis caches, renders. All regenerable, all large.
+data/
+!data/.gitkeep
+
+# os
+.DS_Store
+Thumbs.db
+
+# editors
+.idea/
+*.swp

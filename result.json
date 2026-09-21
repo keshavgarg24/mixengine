@@ -1,0 +1,274 @@
+{
+  "status": "no_renders",
+  "vocal_id": "95",
+  "vocal_summary": "B Minor · ~188 BPM · rap · female_alto. Best fit: trap, drill, hip_hop at 176-199 BPM in B Minor, D Major, F# Minor.",
+  "vocal_dna": {
+    "vocal_id": "95",
+    "source_path": "/kaggle/input/datasets/keshavgarg24/vocals/95.wav",
+    "conditioned_path": null,
+    "version": "1.2.0",
+    "analyzed_at": "2026-07-28T23:33:16Z",
+    "analysis_seconds": 73.9,
+    "status": "ok",
+    "input_type": "light_bleed",
+    "input_type_confidence": 0.609,
+    "was_separated": true,
+    "restoration": {
+      "denoise": false,
+      "dereverb": true,
+      "highpass": true,
+      "dereverb_strength": 0.7
+    },
+    "key": {
+      "pc": 11,
+      "mode": "minor",
+      "name": "B Minor",
+      "camelot": "10A"
+    },
+    "key_confidence": 0.612,
+    "key_candidates": [
+      ["B Minor", 0.5895131971649908],
+      ["B Major", 0.49539154628436327],
+      ["E Major", 0.35784464424342066],
+      ["G# Minor", 0.26528877265570816],
+      ["G Major", 0.24192542415374457]
+    ],
+    "key_method": "note_histogram_kk",
+    "in_key_fraction": 0.73,
+    "bpm": 187.5,
+    "bpm_source": "detected",
+    "bpm_detected": 187.5,
+    "bpm_confidence": 0.636,
+    "bpm_alternates": [93.75, 125.0],
+    "performance_type": "rap",
+    "syllable_rate": 3.83,
+    "duration_s": 169.89,
+    "n_notes": 549,
+    "pitch_method": "torchcrepe",
+    "phrases_s": [
+      [16.44, 18.87],
+      [19.21, 76.85],
+      [80.03, 81.52],
+      [88.37, 131.86]
+    ],
+    "n_phrases": 4,
+    "f0_low_hz": 182.5,
+    "f0_high_hz": 270.8,
+    "f0_median_hz": 236.3,
+    "range_low_note": "F#3",
+    "range_high_note": "C#4",
+    "voice_type": "female_alto",
+    "vibrato_mean_cents": 32.8,
+    "tuning_deviation_cents": 20.3,
+    "active_lufs": -17.69,
+    "phrase_level_spread_db": 2.08,
+    "sibilance_ratio": 0.1597,
+    "resonances": [
+      [247.6, 3.94],
+      [979.8, 3.89],
+      [495.3, 3.5]
+    ],
+    "noise_floor_db": -100.0,
+    "warnings": [
+      "heavy room reverb (~0.83s) - this limits how tight the final mix can sound"
+    ],
+    "beat_requirements": {
+      "tempo_range": [176.2, 198.8],
+      "tempo_range_halftime": [88.1, 99.4],
+      "tempo_range_doubletime": [352.5, 397.5],
+      "tempo_known": true,
+      "key": "B Minor",
+      "camelot": "10A",
+      "compatible_camelot": ["10A", "10B", "11A", "9A"],
+      "compatible_camelot_with_shift": [
+        "3A", "3B", "4A", "2A", "10A", "10B", "11A", "9A", "5A", "5B", "6A"
+      ],
+      "compatible_key_names": ["B Minor", "D Major", "F# Minor", "E Minor"],
+      "genres": ["trap", "drill", "hip_hop", "boom_bap", "rnb"],
+      "min_pocket_score": 0.62,
+      "needs_pocket_hz": [220, 4000],
+      "avoid": ["dense_vocal_chops"],
+      "prefer_grid_stability": 0.8
+    },
+    "summary": "B Minor · ~188 BPM · rap · female_alto. Best fit: trap, drill, hip_hop at 176-199 BPM in B Minor, D Major, F# Minor."
+  },
+  "match_report": {
+    "matches": [
+      {
+        "beat_id": "preview (18)",
+        "title": null,
+        "score": 0.7241150000000001,
+        "semitone_shift": 0,
+        "tempo_ratio": 1.0158933333333333,
+        "tempo_interpretation": "halftime",
+        "target_bpm": 190.48,
+        "sub_scores": {
+          "harmonic": 0.85,
+          "transform": 0.9404,
+          "rhythmic": 0.9818,
+          "pocket": 0.8011,
+          "vibe": 0.5,
+          "metadata": 0.0,
+          "popularity": 0.0
+        },
+        "penalties": { "vocal_collision": 0.0364 },
+        "reasons": [
+          "drum-based beat - works in any key",
+          "tempo aligns almost exactly (95 BPM)",
+          "works as halftime",
+          "no transformation needed - highest quality path",
+          "tight programmed grid suits the rap delivery"
+        ],
+        "warnings": ["beat contains its own vocals - they will be ducked"],
+        "relaxation_level": 4,
+        "transform_summary": "+1.6% tempo, halftime",
+        "is_viable": true,
+        "score_pct": 72
+      },
+      {
+        "beat_id": "preview (19)",
+        "title": null,
+        "score": 0.6797650000000001,
+        "semitone_shift": 0,
+        "tempo_ratio": 1.0,
+        "tempo_interpretation": "halftime",
+        "target_bpm": 187.5,
+        "sub_scores": {
+          "harmonic": 0.85,
+          "transform": 1.0,
+          "rhythmic": 0.9814,
+          "pocket": 0.4597,
+          "vibe": 0.5,
+          "metadata": 0.0,
+          "popularity": 0.0
+        },
+        "penalties": { "vocal_collision": 0.0414 },
+        "reasons": [
+          "drum-based beat - works in any key",
+          "tempo aligns almost exactly (94 BPM)",
+          "works as halftime",
+          "no transformation needed - highest quality path",
+          "tight programmed grid suits the rap delivery"
+        ],
+        "warnings": [
+          "busy midrange - vocal will need heavy carving",
+          "beat contains its own vocals - they will be ducked"
+        ],
+        "relaxation_level": 4,
+        "transform_summary": "halftime",
+        "is_viable": true,
+        "score_pct": 68
+      },
+      {
+        "beat_id": "preview (15)",
+        "title": null,
+        "score": 0.672355,
+        "semitone_shift": 0,
+        "tempo_ratio": 1.0158933333333333,
+        "tempo_interpretation": "halftime",
+        "target_bpm": 190.48,
+        "sub_scores": {
+          "harmonic": 0.85,
+          "transform": 0.9404,
+          "rhythmic": 0.9405,
+          "pocket": 0.504,
+          "vibe": 0.5,
+          "metadata": 0.0,
+          "popularity": 0.0
+        },
+        "penalties": { "vocal_collision": 0.0374 },
+        "reasons": [
+          "drum-based beat - works in any key",
+          "tempo aligns almost exactly (95 BPM)",
+          "works as halftime",
+          "no transformation needed - highest quality path"
+        ],
+        "warnings": [
+          "busy midrange - vocal will need heavy carving",
+          "beat contains its own vocals - they will be ducked"
+        ],
+        "relaxation_level": 4,
+        "transform_summary": "+1.6% tempo, halftime",
+        "is_viable": true,
+        "score_pct": 67
+      },
+      {
+        "beat_id": "preview (20)",
+        "title": null,
+        "score": 0.67232,
+        "semitone_shift": 0,
+        "tempo_ratio": 1.0158933333333333,
+        "tempo_interpretation": "halftime",
+        "target_bpm": 190.48,
+        "sub_scores": {
+          "harmonic": 0.85,
+          "transform": 0.9404,
+          "rhythmic": 0.9776,
+          "pocket": 0.504,
+          "vibe": 0.5,
+          "metadata": 0.0,
+          "popularity": 0.0
+        },
+        "penalties": { "vocal_collision": 0.043 },
+        "reasons": [
+          "drum-based beat - works in any key",
+          "tempo aligns almost exactly (95 BPM)",
+          "works as halftime",
+          "no transformation needed - highest quality path",
+          "tight programmed grid suits the rap delivery"
+        ],
+        "warnings": [
+          "busy midrange - vocal will need heavy carving",
+          "beat contains its own vocals - they will be ducked"
+        ],
+        "relaxation_level": 4,
+        "transform_summary": "+1.6% tempo, halftime",
+        "is_viable": true,
+        "score_pct": 67
+      },
+      {
+        "beat_id": "preview (12)",
+        "title": null,
+        "score": 0.6661250000000001,
+        "semitone_shift": 0,
+        "tempo_ratio": 1.0158933333333333,
+        "tempo_interpretation": "halftime",
+        "target_bpm": 190.48,
+        "sub_scores": {
+          "harmonic": 0.85,
+          "transform": 0.9404,
+          "rhythmic": 0.9825,
+          "pocket": 0.3978,
+          "vibe": 0.5,
+          "metadata": 0.0,
+          "popularity": 0.0
+        },
+        "penalties": { "vocal_collision": 0.034 },
+        "reasons": [
+          "drum-based beat - works in any key",
+          "tempo aligns almost exactly (95 BPM)",
+          "works as halftime",
+          "no transformation needed - highest quality path",
+          "tight programmed grid suits the rap delivery"
+        ],
+        "warnings": [
+          "busy midrange - vocal will need heavy carving",
+          "beat contains its own vocals - they will be ducked"
+        ],
+        "relaxation_level": 4,
+        "transform_summary": "+1.6% tempo, halftime",
+        "is_viable": true,
+        "score_pct": 67
+      }
+    ],
+    "catalog_size": 20,
+    "candidates_considered": 20,
+    "relaxation_level": 4,
+    "relaxation_reason": "allowed 2-semitone shift",
+    "any_viable": true,
+    "message": "Found 5 strong matches. Best: preview (18) (72% - +1.6% tempo, halftime). Note: filters were relaxed (allowed 2-semitone shift) to find these, so they are the best available rather than a close fit. A larger catalog in this key and tempo range would help."
+  },
+  "renders": [],
+  "total_seconds": 283.2,
+  "capabilities_tier": "full"
+}

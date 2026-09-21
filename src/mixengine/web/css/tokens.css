@@ -1,0 +1,71 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   Design tokens.
+
+   The palette is built around one accent. A second would have to earn its
+   place by carrying meaning, and in an audio tool the meanings are already
+   taken: green is "in range", amber is "approaching", red is "clipped".
+   Those three are semantic and are never used decoratively — if something
+   is red here, something is wrong.
+
+   Spacing is a 4px scale. Type is a minor-third ramp with tabular numerals
+   throughout, because every number in this interface sits above or below
+   another number that will be compared to it, and proportional digits make
+   columns of figures wobble.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* surface */
+  --bg:        #111215;
+  --panel:     #17181c;
+  --panel-2:   #1d1e23;
+  --panel-3:   #232429;
+  --line:      #2a2c33;
+  --line-soft: #202229;
+
+  /* ink */
+  --ink:       #e2e3e7;
+  --ink-2:     #9ba0a9;
+  --ink-3:     #6a6e78;
+
+  /* semantic */
+  --amber:     #d9a441;
+  --amber-dim: #6b5324;
+  --green:     #6fbf73;
+  --green-dim: #2f5a33;
+  --red:       #d9584d;
+  --red-dim:   #6a2a25;
+  --blue:      #6c9fd4;
+  --wave:      #808995;
+
+  /* type */
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+
+  --fs-xs:  10.5px;
+  --fs-sm:  11.5px;
+  --fs-md:  12.5px;
+  --fs-lg:  15px;
+  --fs-xl:  19px;
+
+  /* space */
+  --s1: 4px;  --s2: 8px;  --s3: 12px; --s4: 16px;
+  --s5: 22px; --s6: 30px; --s7: 44px;
+
+  --row: 30px;
+  --radius: 2px;
+
+  /* motion — short enough to feel immediate, long enough to be followed */
+  --t-fast: 90ms;
+  --t-med: 160ms;
+  --ease: cubic-bezier(.2, .7, .3, 1);
+}
+
+/* Someone who has asked the system for less motion is not asking for a
+   different aesthetic; they are telling us that movement costs them. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}

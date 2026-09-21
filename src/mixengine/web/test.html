@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>mixengine · browser audio tests</title>
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/base.css">
+<link rel="stylesheet" href="/static/css/components.css">
+<style>
+  main { padding: 22px; max-width: 900px; }
+  .t { display: grid; grid-template-columns: 22px 1fr auto;
+       gap: 10px; align-items: baseline; padding: 6px 0;
+       border-bottom: 1px solid var(--line-soft); font-size: 12.5px; }
+  .t .mark { font-family: var(--mono); }
+  .t.pass .mark { color: var(--green); }
+  .t.fail .mark { color: var(--red); }
+  .t .detail { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+  .t.fail .detail { color: var(--red); }
+  h2 { margin: 26px 0 6px; font-size: 11px; letter-spacing: .1em;
+       text-transform: uppercase; color: var(--ink-3); }
+  #summary { margin-top: 24px; font-size: 15px; }
+</style>
+</head>
+<body>
+<main>
+  <h1 style="font-size:19px;margin-bottom:6px">Browser audio tests</h1>
+  <p class="quiet" style="max-width:66ch">
+    The DSP that runs in the browser is checked here against signals whose
+    correct answer is known in advance — a sine of known level, a waveform
+    built to overshoot by an exact amount, a probe planted at an exact
+    offset. Every one of these caught a real defect when it was first run;
+    each is kept so the defect cannot come back unnoticed.
+  </p>
+  <div id="out"></div>
+  <div id="summary" class="quiet">Running…</div>
+</main>
+<script type="module" src="/static/js/test-runner.js"></script>
+</body>
+</html>

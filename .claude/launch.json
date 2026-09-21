@@ -1,0 +1,13 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "mixengine",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["-m", "uvicorn", "mixengine.api.app:app",
+                      "--host", "127.0.0.1", "--port", "8000",
+                      "--app-dir", "src", "--reload"],
+      "port": 8000
+    }
+  ]
+}

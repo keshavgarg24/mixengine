@@ -1,0 +1,15 @@
+.venv/
+data/
+.git/
+.github/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+result.json
+design-refs/
+.DS_Store

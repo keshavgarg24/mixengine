@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>mixengine</title>
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/base.css">
+<link rel="stylesheet" href="/static/css/components.css">
+<link rel="stylesheet" href="/static/css/views.css">
+</head>
+<body>
+
+<header class="bar">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <span class="name">mixengine</span>
+  </div>
+  <nav class="tabs" role="tablist" aria-label="Sections">
+    <button class="tab is-on" role="tab" aria-selected="true" data-view="catalog">Catalog</button>
+    <button class="tab" role="tab" aria-selected="false" data-view="record">Record</button>
+    <button class="tab" role="tab" aria-selected="false" data-view="vocal">Vocal</button>
+    <button class="tab" role="tab" aria-selected="false" data-view="renders">Renders</button>
+  </nav>
+  <div class="tier" id="tier" title="Installed capability tier">
+    <span class="dot"></span><span id="tier-label">checking…</span>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- ═══════════════════════════ CATALOG ═══════════════════════════ -->
+  <section class="view is-on" data-view="catalog" role="tabpanel">
+    <div class="split">
+      <div class="col">
+        <div class="head">
+          <h1>Beat catalog</h1>
+          <p class="sub">Analysed once, cached by content. Tempo, key, groove,
+             genre and acoustic space are measured from the audio — producer
+             tags are treated as a hint, never as truth.</p>
+        </div>
+
+        <div class="drop" id="beat-drop">
+          <input type="file" id="beat-input" multiple accept="audio/*" hidden>
+          <div class="drop-in">
+            <strong>Drop beats here</strong>
+            <span>or <button class="link" id="beat-browse" type="button">browse</button></span>
+          </div>
+          <div class="drop-opts">
+            <label>Genre
+              <select id="beat-genre">
+                <option value="">detect from audio</option>
+                <option>trap</option><option>drill</option>
+                <option>hip_hop</option><option>rnb</option>
+                <option>pop</option><option>afrobeats</option>
+                <option>drum_and_bass</option><option>lofi</option>
+              </select>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="beat-separate">
+              <span>Separate stems <em>(slow; enables drum-safe pitch shift)</em></span>
+            </label>
+          </div>
+        </div>
+
+        <div id="import-job"></div>
+
+        <div class="table-wrap">
+          <table class="grid">
+            <thead>
+              <tr>
+                <th scope="col">Title</th><th scope="col" class="num">BPM</th>
+                <th scope="col">Key</th><th scope="col" class="num">Pocket</th>
+                <th scope="col" class="num">Grid</th><th scope="col" class="num">Swing</th>
+                <th scope="col" class="num">Length</th><th scope="col">Genre</th>
+              </tr>
+            </thead>
+            <tbody id="catalog-body">
+              <tr class="empty"><td colspan="8">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <aside class="col side" id="beat-detail">
+        <p class="placeholder">Select a beat to inspect its analysis.</p>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════ RECORD ════════════════════════════ -->
+  <section class="view" data-view="record" role="tabpanel">
+    <div class="split">
+      <div class="col">
+        <div class="head">
+          <h1>Record</h1>
+          <p class="sub">Everything worth knowing is said <em>before</em> the
+             take. During it, only faults that cannot be repaired afterwards.
+             Concurrent visual feedback measurably degrades the performance it
+             supervises, so the tuner goes quiet the moment you start.</p>
+        </div>
+
+        <div class="panel" id="recorder">
+          <div class="rec-setup">
+            <label class="wide">Beat
+              <select id="rec-beat"><option value="">No beat — bare vocal</option></select>
+            </label>
+            <label>Count-in
+              <select id="rec-countin">
+                <option value="0">none</option>
+                <option value="1">1 bar</option>
+                <option value="2" selected>2 bars</option>
+              </select>
+            </label>
+          </div>
+          <div class="rec-setup" id="rec-device-row" hidden>
+            <label class="wide">Input
+              <select id="rec-device"></select>
+            </label>
+            <label class="check mono-check">
+              <input type="checkbox" id="rec-monitor" disabled>
+              <span>Monitor</span>
+            </label>
+          </div>
+
+          <div class="rec-transport">
+            <button class="btn" id="rec-enable" type="button">Enable microphone</button>
+            <button class="btn" id="rec-room" type="button" disabled>Check the room</button>
+            <button class="btn" id="rec-calibrate" type="button" disabled>Calibrate latency</button>
+            <button class="btn rec" id="rec-go" type="button" disabled>Record</button>
+            <button class="btn stop" id="rec-stop" type="button" hidden>Stop</button>
+            <span class="rec-clock mono" id="rec-clock">0:00.0</span>
+            <span class="rec-pos mono" id="rec-bar">—</span>
+          </div>
+          <p class="devinfo mono" id="rec-devinfo"></p>
+          <div id="rec-monitor-note"></div>
+
+          <div class="rec-count" id="rec-count" hidden></div>
+
+          <div class="rec-meter">
+            <div class="level-track">
+              <span class="level-fill" id="rec-level"></span>
+              <span class="level-peak" id="rec-peakbar"></span>
+            </div>
+            <canvas class="trace" id="rec-trace" height="56"
+                    aria-label="Recent level history"></canvas>
+            <div class="readout">
+              <span>peak <b class="mono" id="rec-peak">—</b></span>
+              <span>true <b class="mono" id="rec-tp">—</b></span>
+              <span>rms <b class="mono" id="rec-rms">—</b></span>
+              <span>LUFS-S <b class="mono" id="rec-lufs">—</b></span>
+              <span>prox <b class="mono" id="rec-prox">—</b></span>
+            </div>
+            <p class="hint">Peaks near −6 dB, level around −18 dB. Headroom
+               costs nothing; a clipped take cannot be recovered by anything
+               downstream. The true-peak reading is 4× oversampled, so it sees
+               the inter-sample peaks a normal meter misses.</p>
+          </div>
+
+          <div class="tuner" id="rec-tuner" data-mode="live">
+            <div class="tuner-scale"><span class="tuner-needle" id="rec-needle"></span></div>
+            <div class="tuner-read">
+              <span class="tuner-note" id="rec-note">·</span>
+              <span class="tuner-cents" id="rec-cents">sing to tune</span>
+            </div>
+          </div>
+
+          <div id="rec-cues" class="cues"></div>
+          <div id="rec-status"></div>
+        </div>
+
+        <div class="panel" id="take-wave-panel" hidden>
+          <h2>Take <span class="muted mono" id="take-wave-title"></span></h2>
+          <canvas id="take-wave" height="120" aria-label="Take waveform"></canvas>
+        </div>
+
+        <div class="head tight"><h2>Takes</h2></div>
+        <div id="rec-takes"><p class="placeholder">Takes appear here once recorded.</p></div>
+      </div>
+
+      <aside class="col side">
+        <div class="head tight"><h2>Before you start</h2></div>
+        <dl class="facts" id="rec-facts"></dl>
+        <div id="rec-guidance" class="cues"></div>
+
+        <div class="head tight"><h2>Latency</h2></div>
+        <div id="rec-latency"></div>
+
+        <div class="head tight"><h2>Room</h2></div>
+        <div id="rec-room-result">
+          <p class="placeholder">Record three seconds of silence to qualify
+             the room and the gain.</p>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ════════════════════════════ VOCAL ════════════════════════════ -->
+  <section class="view" data-view="vocal" role="tabpanel">
+    <div class="split">
+      <div class="col">
+        <div class="head">
+          <h1>Vocal</h1>
+          <p class="sub">Upload a take, or bring one across from Record. The
+             engine measures pitch, phrasing, delivery and room, then finds
+             the beats that need the least transformation to fit it.</p>
+        </div>
+
+        <div class="drop" id="vocal-drop">
+          <input type="file" id="vocal-input" accept="audio/*" hidden>
+          <div class="drop-in">
+            <strong>Drop a vocal take</strong>
+            <span>or <button class="link" id="vocal-browse" type="button">browse</button></span>
+          </div>
+          <div class="drop-opts">
+            <label>Known BPM
+              <input type="number" id="vocal-bpm" placeholder="auto" min="40" max="220">
+            </label>
+            <label>Known key
+              <input type="text" id="vocal-key" placeholder="e.g. f#_minor">
+            </label>
+            <label>Recorded over
+              <select id="vocal-over"><option value="">nothing / headphones</option></select>
+            </label>
+          </div>
+          <p class="hint">Telling the engine the key or tempo is the single
+             highest-value optional input — a rubato or dry rap take is hard
+             to measure, and a wrong tempo propagates into every later stage.</p>
+        </div>
+
+        <div id="vocal-status"></div>
+        <div id="vocal-readout"></div>
+        <div id="take-report"></div>
+      </div>
+
+      <aside class="col side" id="match-panel">
+        <p class="placeholder">Matches appear here once a take is analysed.</p>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════ RENDERS ═══════════════════════════ -->
+  <section class="view" data-view="renders" role="tabpanel">
+    <div class="head">
+      <h1>Renders</h1>
+      <p class="sub">Every render is graded by re-measuring the finished audio,
+         not the settings that produced it. A failing gate names what is wrong
+         and what would fix it.</p>
+    </div>
+    <div class="panel" id="render-wave-panel" hidden>
+      <canvas id="render-wave" height="140" aria-label="Render waveform"></canvas>
+    </div>
+    <div id="render-list"><p class="placeholder">No renders yet.</p></div>
+  </section>
+
+</main>
+
+<footer class="transport" id="transport" hidden>
+  <button class="btn icon" id="t-play" aria-label="Play">▶</button>
+  <div class="t-meta">
+    <span class="t-title" id="t-title">—</span>
+    <span class="t-sub" id="t-sub"></span>
+  </div>
+  <div class="t-bar" id="t-bar"><span class="t-fill" id="t-fill"></span></div>
+  <span class="t-time mono" id="t-time">0:00</span>
+  <a class="t-dl" id="t-dl" download title="Download">↓</a>
+  <audio id="player" preload="metadata"></audio>
+</footer>
+
+<script type="module" src="/static/js/main.js"></script>
+</body>
+</html>

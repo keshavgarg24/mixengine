@@ -1,0 +1,194 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mixengine"
+version = "2.0.0"
+description = "Vocal + beat to a mixed, mastered, studio-ready song."
+readme = "README.md"
+requires-python = ">=3.9,<3.14"
+license = { text = "Proprietary" }
+keywords = ["audio", "mixing", "mastering", "mir", "music-production"]
+classifiers = [
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Sound/Audio :: Analysis",
+    "Topic :: Multimedia :: Sound/Audio :: Mixers",
+]
+
+# The required set is deliberately small. Everything that meaningfully
+# improves quality is optional and probed at runtime, so the engine runs on
+# a bare install and reports what each missing component costs rather than
+# refusing to start.
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.9",
+    "librosa>=0.10",
+    "soundfile>=0.12",
+]
+
+[project.optional-dependencies]
+# Metering and effects. pyloudnorm is the difference between real ITU-R
+# BS.1770 loudness and an RMS approximation, which matters because every
+# master target is specified in LUFS.
+quality = [
+    "pyloudnorm>=0.1.1",
+    "pedalboard>=0.8",
+    "scikit-learn>=1.2",
+]
+
+# Formant-preserving stretch and pitch shift. python-stretch wraps
+# Signalsmith Stretch, which is MIT-licensed -- worth noting because Rubber
+# Band, the other credible option and the engine's fallback, is GPL with
+# separate commercial licensing.
+stretch = [
+    "python-stretch>=0.3.1",
+]
+
+# Separation and pitch. These need torch, which is installed separately
+# because the right build depends on the hardware.
+models = [
+    "demucs>=4.0.1",
+    "torchcrepe>=0.0.20",
+]
+
+# The local web interface.
+web = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "python-multipart>=0.0.9",
+]
+
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.1",
+    "ruff>=0.4",
+    "mypy>=1.8",
+    "httpx>=0.27",          # FastAPI's TestClient
+]
+
+all = ["mixengine[quality,stretch,web]"]
+
+[project.scripts]
+mixengine = "mixengine.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# The interface ships inside the package: `pip install mixengine` followed
+# by `mixengine serve` must work with no separate asset step, which is the
+# whole reason it has no build pipeline.
+"mixengine.web" = [
+    "*.html",
+    "css/*.css",
+    "js/*.js",
+    "js/core/*.js",
+    "js/audio/*.js",
+    "js/ui/*.js",
+    "worklets/*.js",
+]
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Tooling
+# ═══════════════════════════════════════════════════════════════════════════
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+# `-q` because a passing run should be one line. Anything louder trains
+# people to stop reading it.
+addopts = "-q --strict-markers"
+filterwarnings = [
+    # librosa and numba are noisy about deprecations in each other's APIs,
+    # and none of it is actionable from here.
+    "ignore::DeprecationWarning:librosa.*",
+    "ignore::UserWarning:librosa.*",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py39"
+src = ["src", "tests"]
+exclude = [".venv", "data", "build", "dist"]
+
+[tool.ruff.lint]
+# Chosen to catch defects, not to enforce a house style retroactively.
+#
+# The full pycodestyle/pyupgrade set reports over a thousand findings here,
+# essentially all of them percent-formatting and import ordering in code
+# that works. Acting on those would mean a rewrite touching every DSP file
+# for no behavioural gain, and a lint configuration that reports a thousand
+# issues is one nobody runs — which costs the real findings buried in it.
+#
+# What is kept are the rules that have actually caught bugs in this
+# codebase: undefined and unused names (a function renamed on one side of a
+# call and not the other happened twice), mutable default arguments, and
+# loop-variable capture in closures.
+select = [
+    "F",         # pyflakes: undefined names, unused imports and variables
+    "B",         # bugbear: real footguns
+    "E9",        # syntax and IO errors
+    "C4",        # comprehension misuse
+]
+ignore = [
+    # `zip(strict=)` is 3.10+, and this supports 3.9.
+    "B905",
+    # Assigning a lambda is deliberate for the small DSP helpers, where the
+    # name is the documentation.
+    "E731",
+    # `raise ... from` inside an except block. The engine deliberately
+    # re-raises with its own message in several places; the original is
+    # already logged.
+    "B904",
+    # Function calls in argument defaults. This is not a footgun in FastAPI,
+    # it is the required idiom: `File(...)` and `Form(...)` in a default is
+    # how a handler declares where a parameter comes from, and there is no
+    # alternative spelling. Flagged only in `api/`, where it is always this.
+    "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests deliberately reach into private helpers: several of them exist to
+# pin down the behaviour of one internal function whose bug reached audio.
+"tests/*" = ["E402"]
+"src/mixengine/__init__.py" = ["F401"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["mixengine"]
+
+[tool.mypy]
+python_version = "3.9"
+files = ["src/mixengine"]
+ignore_missing_imports = true
+# Deliberately not strict. Most of this code is numpy arrays flowing through
+# DSP, where the shapes matter and the types do not, and annotating that to
+# mypy's satisfaction produces noise rather than safety. What is worth
+# catching is the mistake that actually happened here more than once: a
+# function renamed on one side of a call and not the other.
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+no_implicit_optional = true
+check_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = ["librosa.*", "soundfile.*", "scipy.*", "pyloudnorm.*",
+          "pedalboard.*", "demucs.*", "torchcrepe.*", "madmom.*",
+          "sklearn.*", "stretch.*", "uvicorn.*"]
+ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["src/mixengine"]
+omit = ["*/web/*", "*/__main__.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

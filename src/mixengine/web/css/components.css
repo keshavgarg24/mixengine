@@ -1,0 +1,274 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   Components.
+
+   Hairlines rather than shadows throughout. A drop shadow implies a card
+   floating above a surface, which is a metaphor from documents; hardware
+   with a display has panels that meet at an edge. The result reads as an
+   instrument rather than a dashboard, which is what this is.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── panel ──────────────────────────────────────────────────────────── */
+
+.panel {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  padding: var(--s4);
+  margin-bottom: var(--s3);
+  border-radius: var(--radius);
+}
+.panel h2 {
+  font-size: var(--fs-xs); font-weight: 600; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--ink-3);
+  margin-bottom: var(--s3);
+  display: flex; align-items: baseline; gap: var(--s2);
+}
+.panel h3 {
+  font-size: var(--fs-xs); font-weight: 600; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--ink-3); margin-bottom: var(--s2);
+}
+.panel .summary {
+  font-size: var(--fs-md); color: var(--ink-2); line-height: 1.6;
+  margin-bottom: var(--s3);
+}
+
+/* ── buttons ────────────────────────────────────────────────────────── */
+
+.btn {
+  background: var(--panel-2); border: 1px solid var(--line);
+  color: var(--ink); font: inherit; font-size: var(--fs-sm);
+  padding: 6px 13px; cursor: pointer; border-radius: var(--radius);
+  transition: border-color var(--t-fast) var(--ease),
+              background var(--t-fast) var(--ease);
+}
+.btn:hover:not(:disabled) { border-color: var(--ink-3); background: var(--panel-3); }
+.btn:active:not(:disabled) { transform: translateY(0.5px); }
+.btn:disabled { opacity: .38; cursor: default; }
+.btn.sm { padding: 4px 9px; font-size: var(--fs-xs); }
+.btn.primary { border-color: var(--amber-dim); color: var(--amber); }
+.btn.primary:hover:not(:disabled) { border-color: var(--amber); }
+.btn.rec { border-color: var(--amber-dim); color: var(--amber); }
+.btn.rec:hover:not(:disabled) { border-color: var(--amber); }
+.btn.stop { border-color: var(--red); color: var(--red); }
+.btn.icon {
+  width: 28px; height: 28px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+
+.link {
+  background: none; border: 0; padding: 0; font: inherit;
+  color: var(--amber); text-decoration: underline;
+  text-underline-offset: 2px; cursor: pointer;
+}
+
+.actions { display: flex; gap: var(--s2); margin-top: var(--s3); }
+
+/* ── form controls ──────────────────────────────────────────────────── */
+
+label { font-size: var(--fs-xs); color: var(--ink-3); }
+
+select, input[type="text"], input[type="number"] {
+  background: var(--panel-2); border: 1px solid var(--line);
+  color: var(--ink); font: inherit; font-size: var(--fs-sm);
+  padding: 6px 8px; border-radius: var(--radius); width: 100%;
+}
+select:focus, input:focus { border-color: var(--ink-3); outline: none; }
+
+.check { display: flex; align-items: center; gap: var(--s2); cursor: pointer; }
+.check input { accent-color: var(--amber); }
+.check span { color: var(--ink-2); font-size: var(--fs-sm); }
+.check em { color: var(--ink-3); font-style: normal; }
+
+/* ── drop zone ──────────────────────────────────────────────────────── */
+
+.drop {
+  border: 1px dashed var(--line); border-radius: var(--radius);
+  background: var(--panel); padding: var(--s4);
+  margin-bottom: var(--s3);
+  transition: border-color var(--t-med) var(--ease), background var(--t-med) var(--ease);
+}
+.drop.is-over { border-color: var(--amber); background: var(--panel-2); }
+.drop-in {
+  display: flex; align-items: baseline; gap: var(--s2);
+  font-size: var(--fs-md); margin-bottom: var(--s3);
+}
+.drop-in strong { font-weight: 600; }
+.drop-in span { color: var(--ink-3); font-size: var(--fs-sm); }
+.drop-opts {
+  display: flex; gap: var(--s4); align-items: flex-end; flex-wrap: wrap;
+}
+.drop-opts label { display: flex; flex-direction: column; gap: 4px; }
+.drop-opts label.check { flex-direction: row; align-items: center; }
+/* Scoped away from checkboxes: a bare `input` selector here gave the
+   "separate stems" checkbox a 150px minimum width, so it floated half a
+   panel away from its own label. */
+.drop-opts select,
+.drop-opts input[type="text"],
+.drop-opts input[type="number"] { min-width: 150px; }
+
+.hint {
+  color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.55;
+  border-left: 1px solid var(--line); padding-left: var(--s3);
+  margin-top: var(--s3);
+}
+
+/* ── table ──────────────────────────────────────────────────────────── */
+
+.table-wrap {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  overflow: hidden; background: var(--panel);
+}
+.grid { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+.grid th {
+  text-align: left; font-weight: 500; font-size: var(--fs-xs);
+  letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3);
+  padding: var(--s2) var(--s3);
+  border-bottom: 1px solid var(--line); background: var(--panel-2);
+  position: sticky; top: 0; z-index: 1;
+}
+.grid td {
+  padding: 0 var(--s3); height: var(--row);
+  border-bottom: 1px solid var(--line-soft);
+}
+.grid .num { text-align: right; font-family: var(--mono); }
+.grid tbody tr { cursor: pointer; }
+.grid tbody tr:hover { background: var(--panel-2); }
+.grid tbody tr.is-on { background: var(--panel-3); box-shadow: inset 2px 0 0 var(--amber); }
+.grid tr.empty td {
+  text-align: center; color: var(--ink-3); height: 64px; cursor: default;
+}
+.grid tr.empty:hover { background: none; }
+
+/* ── facts list ─────────────────────────────────────────────────────── */
+
+.facts {
+  display: grid; gap: 1px; background: var(--line-soft);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  margin-bottom: var(--s3);
+}
+.facts > div {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: var(--s3); background: var(--panel); padding: 6px var(--s3);
+}
+.facts dt {
+  font-size: var(--fs-xs); color: var(--ink-3);
+  text-transform: uppercase; letter-spacing: .07em; white-space: nowrap;
+}
+.facts dd { font-size: var(--fs-sm); color: var(--ink); text-align: right; }
+.facts.compact > div { padding: 4px var(--s2); }
+
+/* ── meter row ──────────────────────────────────────────────────────── */
+
+.meter-row {
+  display: grid; grid-template-columns: 110px 1fr 64px;
+  align-items: center; gap: var(--s2); margin-bottom: 6px;
+  font-size: var(--fs-xs);
+}
+.meter-label { color: var(--ink-3); }
+.meter-track {
+  height: 4px; background: var(--panel-3); border-radius: 2px; overflow: hidden;
+}
+.meter-fill {
+  display: block; height: 100%; background: var(--ink-3);
+  transition: width var(--t-med) var(--ease);
+}
+.meter-fill.good { background: var(--green); }
+.meter-fill.warn { background: var(--amber); }
+.meter-fill.bad  { background: var(--red); }
+.meter-value { text-align: right; color: var(--ink-2); }
+
+/* ── chips and pills ────────────────────────────────────────────────── */
+
+.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.chip {
+  font-size: var(--fs-xs); font-family: var(--mono);
+  padding: 2px 7px; border: 1px solid var(--line);
+  border-radius: var(--radius); color: var(--ink-3);
+}
+.chip.good { border-color: var(--green-dim); color: var(--green); }
+.chip.warn { border-color: var(--amber-dim); color: var(--amber); }
+.chip.bad  { border-color: var(--red-dim); color: var(--red); }
+.chip.amber { border-color: var(--amber-dim); color: var(--amber); }
+.chip.info  { border-color: var(--line); color: var(--blue); }
+
+.pill {
+  font-size: var(--fs-xs); letter-spacing: .07em; text-transform: uppercase;
+  color: var(--ink-3); border: 1px solid var(--line);
+  padding: 1px 6px; border-radius: var(--radius);
+}
+.pill.amber { color: var(--amber); border-color: var(--amber-dim); }
+.pill.good { color: var(--green); border-color: var(--green-dim); }
+.pill.bad { color: var(--red); border-color: var(--red-dim); }
+
+/* ── notes and cues ─────────────────────────────────────────────────── */
+
+.note {
+  font-size: var(--fs-sm); padding: var(--s2) var(--s3);
+  border-left: 2px solid var(--line); background: var(--panel-2);
+  margin: var(--s2) 0; border-radius: 0 var(--radius) var(--radius) 0;
+}
+.note.good { border-left-color: var(--green); }
+.note.warn { border-left-color: var(--amber); }
+.note.bad  { border-left-color: var(--red); color: var(--ink); }
+
+.cues { display: grid; gap: 5px; }
+.cue {
+  border-left: 2px solid var(--line); background: var(--panel-2);
+  padding: 7px var(--s3); font-size: var(--fs-sm);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  display: grid; grid-template-columns: auto 1fr; gap: var(--s2);
+  align-items: baseline;
+}
+.cue > .cue-msg:only-child, .cue > .cue-msg:first-child { grid-column: 1 / -1; }
+.cue-time { color: var(--ink-3); font-size: var(--fs-xs); grid-column: 1; }
+.cue-time + .cue-msg { grid-column: 2; }
+.cue-msg { color: var(--ink); }
+.cue-why {
+  grid-column: 1 / -1; color: var(--ink-3);
+  font-size: var(--fs-xs); line-height: 1.5; margin-top: 3px;
+}
+.cue-fatal { border-left-color: var(--red); }
+.cue-fatal .cue-msg { color: var(--red); }
+.cue-warn  { border-left-color: var(--amber); }
+.cue-info  { border-left-color: var(--blue); }
+.cue-good  { border-left-color: var(--green); }
+
+/* ── progress ───────────────────────────────────────────────────────── */
+
+.progress {
+  display: flex; align-items: center; gap: var(--s3);
+  padding: var(--s2) 0; font-size: var(--fs-sm);
+}
+.progress-bar {
+  flex: 1; height: 3px; background: var(--panel-3); border-radius: 2px;
+  overflow: hidden;
+}
+.progress-bar span {
+  display: block; height: 100%; background: var(--amber);
+  transition: width var(--t-med) var(--ease);
+}
+
+/* ── transport ──────────────────────────────────────────────────────── */
+
+.transport {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: var(--s3);
+  height: 52px; padding: 0 var(--s4);
+  border-top: 1px solid var(--line); background: var(--panel);
+}
+.t-meta { display: flex; flex-direction: column; min-width: 180px; }
+.t-title { font-size: var(--fs-sm); }
+.t-sub { font-size: var(--fs-xs); color: var(--ink-3); }
+.t-bar {
+  flex: 1; height: 3px; background: var(--panel-3);
+  border-radius: 2px; cursor: pointer; position: relative;
+}
+.t-fill {
+  position: absolute; inset: 0 auto 0 0; width: 0;
+  background: var(--amber); border-radius: 2px;
+}
+.t-time { font-size: var(--fs-sm); color: var(--ink-2); }
+.t-dl {
+  color: var(--ink-3); text-decoration: none; font-size: 15px;
+  padding: 0 var(--s2);
+}
+.t-dl:hover { color: var(--amber); }

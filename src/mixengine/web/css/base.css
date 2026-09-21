@@ -1,0 +1,134 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   Reset, layout frame, typography.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+/* A `display` on a component class outranks the `hidden` attribute, so the
+ * attribute silently stops working the moment an element is given one.
+ * Restoring it explicitly keeps `hidden` meaningful across the whole sheet. */
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font: var(--fs-md)/1.55 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  font-variant-numeric: tabular-nums;
+}
+
+body { display: flex; flex-direction: column; }
+
+h1, h2, h3, p, dl, dd, ul, figure { margin: 0; }
+ul { padding: 0; list-style: none; }
+
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.muted { color: var(--ink-3); }
+.quiet { color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.5; }
+.good { color: var(--green); }
+.warn { color: var(--amber); }
+.bad  { color: var(--red); }
+
+:focus-visible {
+  outline: 1px solid var(--amber);
+  outline-offset: 2px;
+}
+
+/* ── top bar ────────────────────────────────────────────────────────── */
+
+.bar {
+  display: flex; align-items: center; gap: var(--s5);
+  height: 46px; padding: 0 var(--s4);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  flex: 0 0 auto;
+}
+
+.brand { display: flex; align-items: center; gap: var(--s2); }
+.brand .mark {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--amber);
+  box-shadow: 0 0 0 3px rgba(217,164,65,.13);
+}
+.brand .name {
+  font-size: var(--fs-md); font-weight: 600; letter-spacing: .02em;
+}
+
+.tabs { display: flex; gap: var(--s1); }
+.tab {
+  background: none; border: 1px solid transparent; color: var(--ink-3);
+  font: inherit; font-size: var(--fs-sm); padding: 5px 11px;
+  cursor: pointer; border-radius: var(--radius);
+  transition: color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+.tab:hover { color: var(--ink-2); }
+.tab.is-on { color: var(--bg); background: var(--amber); font-weight: 600; }
+
+.tier {
+  margin-left: auto; display: flex; align-items: center; gap: var(--s2);
+  font-size: var(--fs-xs); color: var(--ink-3); letter-spacing: .04em;
+}
+.tier .dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--ink-3);
+}
+.tier .dot.good { background: var(--green); }
+.tier .dot.warn { background: var(--amber); }
+.tier .dot.bad  { background: var(--red); }
+
+/* ── main ───────────────────────────────────────────────────────────── */
+
+#main { flex: 1 1 auto; overflow-y: auto; }
+
+.view { display: none; padding: var(--s5) var(--s4) var(--s7); }
+.view.is-on { display: block; }
+
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: var(--s5);
+  align-items: start;
+  max-width: 1500px;
+}
+.col { min-width: 0; }
+.side { position: sticky; top: var(--s4); }
+
+@media (max-width: 1080px) {
+  .split { grid-template-columns: minmax(0, 1fr); }
+  .side { position: static; }
+}
+
+.head { margin-bottom: var(--s4); max-width: 68ch; }
+.head h1 {
+  font-size: var(--fs-xl); font-weight: 600; letter-spacing: -.01em;
+  margin-bottom: var(--s2);
+}
+.head .sub { color: var(--ink-2); font-size: var(--fs-md); line-height: 1.6; }
+.head .sub em { color: var(--ink); font-style: italic; }
+
+.head.tight { margin: var(--s5) 0 var(--s2); }
+.head.tight h2 {
+  font-size: var(--fs-xs); font-weight: 600; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--ink-3);
+}
+
+.banner {
+  padding: var(--s3) var(--s4); margin-bottom: var(--s4);
+  border-left: 2px solid var(--red); background: var(--panel-2);
+  font-size: var(--fs-sm);
+}
+
+.placeholder {
+  padding: var(--s5); text-align: center;
+  color: var(--ink-3); font-size: var(--fs-sm);
+  border: 1px dashed var(--line); border-radius: var(--radius);
+}
+
+.spin {
+  display: inline-block; width: 9px; height: 9px;
+  border: 1px solid var(--ink-3); border-top-color: var(--amber);
+  border-radius: 50%; animation: spin .7s linear infinite;
+  vertical-align: -1px; margin-right: 4px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
