@@ -2,272 +2,185 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="dark">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>mixengine</title>
-<link rel="stylesheet" href="/static/css/tokens.css">
-<link rel="stylesheet" href="/static/css/base.css">
-<link rel="stylesheet" href="/static/css/components.css">
-<link rel="stylesheet" href="/static/css/views.css">
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/components.css">
+<link rel="stylesheet" href="css/views.css">
 </head>
 <body>
 
 <header class="bar">
-  <div class="brand">
-    <span class="mark" aria-hidden="true"></span>
-    <span class="name">mixengine</span>
-  </div>
-  <nav class="tabs" role="tablist" aria-label="Sections">
-    <button class="tab is-on" role="tab" aria-selected="true" data-view="catalog">Catalog</button>
-    <button class="tab" role="tab" aria-selected="false" data-view="record">Record</button>
-    <button class="tab" role="tab" aria-selected="false" data-view="vocal">Vocal</button>
-    <button class="tab" role="tab" aria-selected="false" data-view="renders">Renders</button>
-  </nav>
-  <div class="tier" id="tier" title="Installed capability tier">
-    <span class="dot"></span><span id="tier-label">checking…</span>
-  </div>
+  <span class="brand">mixengine</span>
+  <span class="bar-spacer"></span>
+  <span id="tier" class="tier"><span class="dot"></span><span id="tier-label">checking…</span></span>
 </header>
 
 <main id="main">
 
-  <!-- ═══════════════════════════ CATALOG ═══════════════════════════ -->
-  <section class="view is-on" data-view="catalog" role="tabpanel">
-    <div class="split">
-      <div class="col">
-        <div class="head">
-          <h1>Beat catalog</h1>
-          <p class="sub">Analysed once, cached by content. Tempo, key, groove,
-             genre and acoustic space are measured from the audio — producer
-             tags are treated as a hint, never as truth.</p>
-        </div>
+  <!-- ── The two sources ────────────────────────────────────────────── -->
+  <section class="sources" aria-label="Your vocal and your beat">
 
-        <div class="drop" id="beat-drop">
-          <input type="file" id="beat-input" multiple accept="audio/*" hidden>
-          <div class="drop-in">
-            <strong>Drop beats here</strong>
-            <span>or <button class="link" id="beat-browse" type="button">browse</button></span>
-          </div>
-          <div class="drop-opts">
-            <label>Genre
-              <select id="beat-genre">
-                <option value="">detect from audio</option>
-                <option>trap</option><option>drill</option>
-                <option>hip_hop</option><option>rnb</option>
-                <option>pop</option><option>afrobeats</option>
-                <option>drum_and_bass</option><option>lofi</option>
-              </select>
-            </label>
-            <label class="check">
-              <input type="checkbox" id="beat-separate">
-              <span>Separate stems <em>(slow; enables drum-safe pitch shift)</em></span>
-            </label>
-          </div>
-        </div>
-
-        <div id="import-job"></div>
-
-        <div class="table-wrap">
-          <table class="grid">
-            <thead>
-              <tr>
-                <th scope="col">Title</th><th scope="col" class="num">BPM</th>
-                <th scope="col">Key</th><th scope="col" class="num">Pocket</th>
-                <th scope="col" class="num">Grid</th><th scope="col" class="num">Swing</th>
-                <th scope="col" class="num">Length</th><th scope="col">Genre</th>
-              </tr>
-            </thead>
-            <tbody id="catalog-body">
-              <tr class="empty"><td colspan="8">Loading…</td></tr>
-            </tbody>
-          </table>
-        </div>
+    <article class="slot" id="slot-vocal" data-kind="vocal">
+      <div class="slot-head">
+        <h2>Vocal</h2>
+        <span class="slot-meta mono" id="vocal-meta"></span>
       </div>
 
-      <aside class="col side" id="beat-detail">
-        <p class="placeholder">Select a beat to inspect its analysis.</p>
-      </aside>
+      <div class="slot-body">
+        <div class="slot-empty" id="vocal-empty">
+          <canvas class="slot-wave" aria-hidden="true"></canvas>
+          <p class="slot-hint">Drop a take here, or record one.</p>
+          <div class="slot-actions">
+            <button class="btn" data-act="upload" data-kind="vocal" type="button">Upload</button>
+            <button class="btn" data-act="record" data-kind="vocal" type="button">Record</button>
+          </div>
+        </div>
+
+        <div class="slot-filled" id="vocal-filled" hidden>
+          <canvas class="slot-wave" id="vocal-wave"></canvas>
+          <div class="slot-file">
+            <span class="slot-name" id="vocal-name"></span>
+            <button class="link" data-act="clear" data-kind="vocal" type="button">Replace</button>
+          </div>
+        </div>
+      </div>
+      <input type="file" id="vocal-file" accept="audio/*" hidden>
+    </article>
+
+    <article class="slot" id="slot-beat" data-kind="beat">
+      <div class="slot-head">
+        <h2>Beat</h2>
+        <span class="slot-meta mono" id="beat-meta"></span>
+      </div>
+
+      <div class="slot-body">
+        <div class="slot-empty" id="beat-empty">
+          <canvas class="slot-wave" aria-hidden="true"></canvas>
+          <p class="slot-hint">Drop a beat here, or record one.</p>
+          <div class="slot-actions">
+            <button class="btn" data-act="upload" data-kind="beat" type="button">Upload</button>
+            <button class="btn" data-act="record" data-kind="beat" type="button">Record</button>
+          </div>
+        </div>
+
+        <div class="slot-filled" id="beat-filled" hidden>
+          <canvas class="slot-wave" id="beat-wave"></canvas>
+          <div class="slot-file">
+            <span class="slot-name" id="beat-name"></span>
+            <button class="link" data-act="clear" data-kind="beat" type="button">Replace</button>
+          </div>
+        </div>
+      </div>
+      <input type="file" id="beat-file" accept="audio/*" hidden>
+    </article>
+  </section>
+
+  <!-- ── Both sources converge on one process ───────────────────────── -->
+  <div class="converge" aria-hidden="true"></div>
+
+  <section class="process" aria-label="How to treat this render">
+
+    <details class="treatment" id="treatment">
+      <summary>
+        <span class="treat-label">Treatment</span>
+        <span class="treat-state mono" id="treat-state">everything automatic</span>
+      </summary>
+
+      <div class="treat-grid">
+        <label class="field">
+          <span>The vocal is</span>
+          <select id="i-vocal_state">
+            <option value="auto">work it out</option>
+            <option value="raw">a raw take</option>
+            <option value="tuned">already tuned</option>
+            <option value="finished">tuned and mixed</option>
+          </select>
+          <small>A finished vocal is levelled and seated, never re-produced.</small>
+        </label>
+
+        <label class="field">
+          <span>Recorded to this beat</span>
+          <select id="i-relationship">
+            <option value="auto">work it out</option>
+            <option value="locked">yes, this exact beat</option>
+            <option value="free">no, a different beat</option>
+          </select>
+          <small>If yes, the timing is left exactly as performed.</small>
+        </label>
+
+        <label class="field">
+          <span>Tuning</span>
+          <select id="i-tune">
+            <option value="auto">work it out</option>
+            <option value="off">leave the pitch alone</option>
+            <option value="0.35">gentle</option>
+            <option value="0.7">strong</option>
+          </select>
+          <small>Notes already close to the grid are never moved.</small>
+        </label>
+
+        <label class="field">
+          <span>Timing</span>
+          <select id="i-timing">
+            <option value="auto">work it out</option>
+            <option value="off">keep my pocket</option>
+            <option value="0.45">tighten</option>
+          </select>
+          <small>Your feel is a performance, not an error.</small>
+        </label>
+
+        <label class="field">
+          <span>Reverb</span>
+          <select id="i-space">
+            <option value="auto">work it out</option>
+            <option value="keep">keep what's on it</option>
+            <option value="match">match the beat's room</option>
+            <option value="add">add some</option>
+          </select>
+          <small>A tail you printed on purpose is part of the sound.</small>
+        </label>
+
+        <label class="field">
+          <span>Key</span>
+          <input type="text" id="i-key" placeholder="work it out" spellcheck="false">
+          <small>Such as F minor. Yours wins over anything detected.</small>
+        </label>
+      </div>
+    </details>
+
+    <button class="go" id="go" type="button" disabled>
+      <span id="go-label">Add a vocal and a beat</span>
+    </button>
+  </section>
+
+  <!-- ── While it runs ──────────────────────────────────────────────── -->
+  <section class="run" id="run" hidden aria-live="polite">
+    <div class="rail"><div class="rail-fill" id="rail-fill"></div></div>
+    <p class="run-stage mono" id="run-stage">Starting…</p>
+    <div class="plan" id="plan" hidden>
+      <p class="plan-summary" id="plan-summary"></p>
+      <ul class="plan-list" id="plan-list"></ul>
     </div>
   </section>
 
-  <!-- ═══════════════════════════ RECORD ════════════════════════════ -->
-  <section class="view" data-view="record" role="tabpanel">
-    <div class="split">
-      <div class="col">
-        <div class="head">
-          <h1>Record</h1>
-          <p class="sub">Everything worth knowing is said <em>before</em> the
-             take. During it, only faults that cannot be repaired afterwards.
-             Concurrent visual feedback measurably degrades the performance it
-             supervises, so the tuner goes quiet the moment you start.</p>
-        </div>
-
-        <div class="panel" id="recorder">
-          <div class="rec-setup">
-            <label class="wide">Beat
-              <select id="rec-beat"><option value="">No beat — bare vocal</option></select>
-            </label>
-            <label>Count-in
-              <select id="rec-countin">
-                <option value="0">none</option>
-                <option value="1">1 bar</option>
-                <option value="2" selected>2 bars</option>
-              </select>
-            </label>
-          </div>
-          <div class="rec-setup" id="rec-device-row" hidden>
-            <label class="wide">Input
-              <select id="rec-device"></select>
-            </label>
-            <label class="check mono-check">
-              <input type="checkbox" id="rec-monitor" disabled>
-              <span>Monitor</span>
-            </label>
-          </div>
-
-          <div class="rec-transport">
-            <button class="btn" id="rec-enable" type="button">Enable microphone</button>
-            <button class="btn" id="rec-room" type="button" disabled>Check the room</button>
-            <button class="btn" id="rec-calibrate" type="button" disabled>Calibrate latency</button>
-            <button class="btn rec" id="rec-go" type="button" disabled>Record</button>
-            <button class="btn stop" id="rec-stop" type="button" hidden>Stop</button>
-            <span class="rec-clock mono" id="rec-clock">0:00.0</span>
-            <span class="rec-pos mono" id="rec-bar">—</span>
-          </div>
-          <p class="devinfo mono" id="rec-devinfo"></p>
-          <div id="rec-monitor-note"></div>
-
-          <div class="rec-count" id="rec-count" hidden></div>
-
-          <div class="rec-meter">
-            <div class="level-track">
-              <span class="level-fill" id="rec-level"></span>
-              <span class="level-peak" id="rec-peakbar"></span>
-            </div>
-            <canvas class="trace" id="rec-trace" height="56"
-                    aria-label="Recent level history"></canvas>
-            <div class="readout">
-              <span>peak <b class="mono" id="rec-peak">—</b></span>
-              <span>true <b class="mono" id="rec-tp">—</b></span>
-              <span>rms <b class="mono" id="rec-rms">—</b></span>
-              <span>LUFS-S <b class="mono" id="rec-lufs">—</b></span>
-              <span>prox <b class="mono" id="rec-prox">—</b></span>
-            </div>
-            <p class="hint">Peaks near −6 dB, level around −18 dB. Headroom
-               costs nothing; a clipped take cannot be recovered by anything
-               downstream. The true-peak reading is 4× oversampled, so it sees
-               the inter-sample peaks a normal meter misses.</p>
-          </div>
-
-          <div class="tuner" id="rec-tuner" data-mode="live">
-            <div class="tuner-scale"><span class="tuner-needle" id="rec-needle"></span></div>
-            <div class="tuner-read">
-              <span class="tuner-note" id="rec-note">·</span>
-              <span class="tuner-cents" id="rec-cents">sing to tune</span>
-            </div>
-          </div>
-
-          <div id="rec-cues" class="cues"></div>
-          <div id="rec-status"></div>
-        </div>
-
-        <div class="panel" id="take-wave-panel" hidden>
-          <h2>Take <span class="muted mono" id="take-wave-title"></span></h2>
-          <canvas id="take-wave" height="120" aria-label="Take waveform"></canvas>
-        </div>
-
-        <div class="head tight"><h2>Takes</h2></div>
-        <div id="rec-takes"><p class="placeholder">Takes appear here once recorded.</p></div>
-      </div>
-
-      <aside class="col side">
-        <div class="head tight"><h2>Before you start</h2></div>
-        <dl class="facts" id="rec-facts"></dl>
-        <div id="rec-guidance" class="cues"></div>
-
-        <div class="head tight"><h2>Latency</h2></div>
-        <div id="rec-latency"></div>
-
-        <div class="head tight"><h2>Room</h2></div>
-        <div id="rec-room-result">
-          <p class="placeholder">Record three seconds of silence to qualify
-             the room and the gain.</p>
-        </div>
-      </aside>
+  <!-- ── The result ─────────────────────────────────────────────────── -->
+  <section class="result" id="result" hidden>
+    <div class="result-head">
+      <h2 id="result-title">Your song</h2>
+      <span class="score mono" id="result-score"></span>
     </div>
-  </section>
-
-  <!-- ════════════════════════════ VOCAL ════════════════════════════ -->
-  <section class="view" data-view="vocal" role="tabpanel">
-    <div class="split">
-      <div class="col">
-        <div class="head">
-          <h1>Vocal</h1>
-          <p class="sub">Upload a take, or bring one across from Record. The
-             engine measures pitch, phrasing, delivery and room, then finds
-             the beats that need the least transformation to fit it.</p>
-        </div>
-
-        <div class="drop" id="vocal-drop">
-          <input type="file" id="vocal-input" accept="audio/*" hidden>
-          <div class="drop-in">
-            <strong>Drop a vocal take</strong>
-            <span>or <button class="link" id="vocal-browse" type="button">browse</button></span>
-          </div>
-          <div class="drop-opts">
-            <label>Known BPM
-              <input type="number" id="vocal-bpm" placeholder="auto" min="40" max="220">
-            </label>
-            <label>Known key
-              <input type="text" id="vocal-key" placeholder="e.g. f#_minor">
-            </label>
-            <label>Recorded over
-              <select id="vocal-over"><option value="">nothing / headphones</option></select>
-            </label>
-          </div>
-          <p class="hint">Telling the engine the key or tempo is the single
-             highest-value optional input — a rubato or dry rap take is hard
-             to measure, and a wrong tempo propagates into every later stage.</p>
-        </div>
-
-        <div id="vocal-status"></div>
-        <div id="vocal-readout"></div>
-        <div id="take-report"></div>
-      </div>
-
-      <aside class="col side" id="match-panel">
-        <p class="placeholder">Matches appear here once a take is analysed.</p>
-      </aside>
+    <audio id="player" controls preload="metadata"></audio>
+    <div class="gates" id="gates"></div>
+    <div class="result-actions">
+      <a class="btn" id="download" download>Download</a>
+      <button class="btn" id="again" type="button">Change something and run again</button>
     </div>
-  </section>
-
-  <!-- ═══════════════════════════ RENDERS ═══════════════════════════ -->
-  <section class="view" data-view="renders" role="tabpanel">
-    <div class="head">
-      <h1>Renders</h1>
-      <p class="sub">Every render is graded by re-measuring the finished audio,
-         not the settings that produced it. A failing gate names what is wrong
-         and what would fix it.</p>
-    </div>
-    <div class="panel" id="render-wave-panel" hidden>
-      <canvas id="render-wave" height="140" aria-label="Render waveform"></canvas>
-    </div>
-    <div id="render-list"><p class="placeholder">No renders yet.</p></div>
   </section>
 
 </main>
 
-<footer class="transport" id="transport" hidden>
-  <button class="btn icon" id="t-play" aria-label="Play">▶</button>
-  <div class="t-meta">
-    <span class="t-title" id="t-title">—</span>
-    <span class="t-sub" id="t-sub"></span>
-  </div>
-  <div class="t-bar" id="t-bar"><span class="t-fill" id="t-fill"></span></div>
-  <span class="t-time mono" id="t-time">0:00</span>
-  <a class="t-dl" id="t-dl" download title="Download">↓</a>
-  <audio id="player" preload="metadata"></audio>
-</footer>
-
-<script type="module" src="/static/js/main.js"></script>
+<script type="module" src="js/main.js"></script>
 </body>
 </html>

@@ -1,62 +1,74 @@
 /* ═══════════════════════════════════════════════════════════════════════
    Design tokens.
 
-   The palette is built around one accent. A second would have to earn its
-   place by carrying meaning, and in an audio tool the meanings are already
-   taken: green is "in range", amber is "approaching", red is "clipped".
-   Those three are semantic and are never used decoratively — if something
-   is red here, something is wrong.
+   The surface is near-black with a violet bias rather than neutral grey —
+   a darkened control room, not a generic dark mode. One accent gradient
+   carries the primary action, the progress rail, and the edge of whichever
+   slot you are filling. It appears nowhere else; a gradient used to
+   decorate stops meaning anything when it is used to direct.
 
-   Spacing is a 4px scale. Type is a minor-third ramp with tabular numerals
-   throughout, because every number in this interface sits above or below
-   another number that will be compared to it, and proportional digits make
-   columns of figures wobble.
+   Green, amber and red are semantic and never decorative. In an audio
+   tool their meanings are already taken: in range, approaching, clipped.
+   If something is red here, something is wrong.
+
+   Spacing is a 4px scale. Every measured value is set in mono with
+   tabular numerals, because every number in this interface sits above or
+   below another number it will be compared to, and proportional digits
+   make columns of figures wobble.
    ═══════════════════════════════════════════════════════════════════════ */
 
 :root {
-  /* surface */
-  --bg:        #111215;
-  --panel:     #17181c;
-  --panel-2:   #1d1e23;
-  --panel-3:   #232429;
-  --line:      #2a2c33;
-  --line-soft: #202229;
+  /* surface — violet-biased dark, not neutral */
+  --bg:        #0E0B14;
+  --panel:     #17121F;
+  --panel-2:   #1E1829;
+  --panel-3:   #261E34;
+  --line:      #2A2136;
+  --line-soft: #201A2B;
 
   /* ink */
-  --ink:       #e2e3e7;
-  --ink-2:     #9ba0a9;
-  --ink-3:     #6a6e78;
+  --ink:       #EDE9F2;
+  --ink-2:     #9A8FB0;
+  --ink-3:     #6B6180;
 
-  /* semantic */
-  --amber:     #d9a441;
-  --amber-dim: #6b5324;
-  --green:     #6fbf73;
-  --green-dim: #2f5a33;
-  --red:       #d9584d;
-  --red-dim:   #6a2a25;
-  --blue:      #6c9fd4;
-  --wave:      #808995;
+  /* the one accent */
+  --violet:    #6D4AFF;
+  --orchid:    #B44AC0;
+  --accent:    #8B5CF6;
+  --accent-dim:#3A2A6B;
+  --grad:      linear-gradient(101deg, var(--violet) 0%, var(--orchid) 100%);
+
+  /* semantic — reserved, never decorative */
+  --green:     #5FBF8F;
+  --green-dim: #1F4636;
+  --amber:     #D9A441;
+  --amber-dim: #5C4620;
+  --red:       #E05252;
+  --red-dim:   #5E2424;
+  --wave:      #7A6F92;
 
   /* type */
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
 
-  --fs-xs:  10.5px;
-  --fs-sm:  11.5px;
-  --fs-md:  12.5px;
+  --fs-xs:  11px;
+  --fs-sm:  12px;
+  --fs-md:  13px;
   --fs-lg:  15px;
-  --fs-xl:  19px;
+  --fs-xl:  20px;
+  --fs-2xl: 28px;
 
   /* space */
   --s1: 4px;  --s2: 8px;  --s3: 12px; --s4: 16px;
-  --s5: 22px; --s6: 30px; --s7: 44px;
+  --s5: 22px; --s6: 30px; --s7: 44px; --s8: 64px;
 
-  --row: 30px;
-  --radius: 2px;
+  --row: 32px;
+  --radius: 3px;
+  --radius-lg: 6px;
 
-  /* motion — short enough to feel immediate, long enough to be followed */
+  /* motion — short enough to feel immediate, long enough to follow */
   --t-fast: 90ms;
-  --t-med: 160ms;
+  --t-med: 180ms;
   --ease: cubic-bezier(.2, .7, .3, 1);
 }
 

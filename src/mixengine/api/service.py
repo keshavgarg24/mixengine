@@ -341,6 +341,55 @@ class EngineService:
 
         return self._run_async(job, work)
 
+    def start_session_render(self, vocal_path: str, beat_path: str,
+                             *, intents: Optional[Any] = None) -> Job:
+        """One vocal, one beat, one run.
+
+        The dashboard collects both files and whatever the user wants to
+        say about them, then calls this once. Analysis of each input
+        happens inside the job rather than on upload: a person choosing a
+        file has not asked for anything to be computed yet, and firing a
+        separate analysis per upload meant the engine ran three times to
+        make one song.
+        """
+        job = self._new_job("render")
+
+        def work(j: Job) -> dict:
+            from ..audio import pipeline
+
+            j.stage, j.progress, j.message = "intake", 0.05, \
+                "Listening to the beat"
+            bdna = self.analyze_beat(beat_path, job=j)
+            if bdna.get("status") != "ok":
+                raise RuntimeError(bdna.get("error") or "beat analysis failed")
+
+            j.stage, j.progress, j.message = "intake", 0.2, \
+                "Listening to the vocal"
+            user_bpm = getattr(intents, "bpm", None) if intents else None
+            user_key = getattr(intents, "key", None) if intents else None
+            vdna = self.analyze_vocal(vocal_path, user_bpm=user_bpm,
+                                      user_key=user_key, job=j)
+            if vdna.get("status") != "ok":
+                raise RuntimeError(vdna.get("error") or "vocal analysis failed")
+
+            j.stage, j.progress, j.message = "transform", 0.4, \
+                "Placing, mixing and mastering"
+            out_dir = self.ws.path("outputs", j.id)
+            result = pipeline.run(vocal_path, [bdna], out_dir, n_beats=1,
+                                  variants_per_beat=1, vdna=vdna,
+                                  intents=intents)
+
+            j.stage, j.progress = "check", 0.95
+            for r in result.get("renders", []):
+                p = r.get("path") or ""
+                if p:
+                    r["download"] = "/api/audio/%s/%s" % (j.id,
+                                                          os.path.basename(p))
+            result["vocal_summary"] = vdna.get("summary")
+            return result
+
+        return self._run_async(job, work)
+
     def start_beat_import(self, paths: List[str],
                           metadata_by_file: Optional[Dict[str, dict]] = None,
                           separate: bool = False) -> Job:

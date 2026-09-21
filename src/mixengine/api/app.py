@@ -215,13 +215,46 @@ def create_app(data_root: str = "./data") -> FastAPI:
     # ── render ────────────────────────────────────────────────────────────
 
     @app.post("/api/render")
-    def render(vocal_path: str = Form(...),
+    def render(vocal: Optional[UploadFile] = File(None),
+               beat: Optional[UploadFile] = File(None),
+               vocal_path: Optional[str] = Form(None),
                beat_ids: str = Form(""),
                variants: int = Form(1),
                bpm: Optional[float] = Form(None),
-               key: Optional[str] = Form(None)):
-        if not os.path.exists(vocal_path):
-            raise HTTPException(400, "vocal file not found; upload it first")
+               key: Optional[str] = Form(None),
+               vocal_state: Optional[str] = Form(None),
+               relationship: Optional[str] = Form(None),
+               tune: Optional[str] = Form(None),
+               timing: Optional[str] = Form(None),
+               space: Optional[str] = Form(None),
+               separate: Optional[str] = Form(None),
+               loudness: Optional[str] = Form(None)):
+        """Render a song.
+
+        Two shapes, because two callers need different things. The
+        dashboard posts both files and whatever the user said about them,
+        and gets one run. The CLI and older clients post a `vocal_path`
+        already on disk plus catalog beat ids.
+        """
+        from ..core.intents import Intents
+        try:
+            intents = Intents.from_dict({
+                "vocal_state": vocal_state, "relationship": relationship,
+                "tune": tune, "timing": timing, "space": space,
+                "separate": separate, "loudness": loudness,
+                "bpm": bpm, "key": key})
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+
+        if vocal is not None and beat is not None:
+            job = svc.start_session_render(_save_upload(vocal, "vocals"),
+                                           _save_upload(beat, "beats"),
+                                           intents=intents)
+            return job.to_dict()
+
+        if not vocal_path or not os.path.exists(vocal_path):
+            raise HTTPException(400, "send a vocal and a beat, or a "
+                                     "vocal_path that exists")
         ids = [b for b in beat_ids.split(",") if b.strip()]
         job = svc.start_render(vocal_path, ids, variants=int(variants),
                                user_bpm=bpm, user_key=key)
