@@ -582,13 +582,19 @@ def _family_root(key: "Key") -> int:
 
 
 def _related(a: "Key", b: "Key") -> bool:
-    """True when two keys are the same family or a fifth apart.
+    """True when two keys need no transposition between them.
 
-    Relative major/minor share all seven notes. A fifth relationship --
-    C# minor over a G# minor beat -- is the ordinary dominant pairing and
-    needs no transposition either. Anything further apart is a real key
-    difference.
+    Three relationships qualify. Relative major/minor share all seven
+    notes. A fifth apart -- C# minor over a G# minor beat -- is the
+    ordinary dominant pairing. And parallel keys share a tonic: a
+    detector calling a beat "C major" when the record is in C minor is
+    the commonest key error there is, because the third that separates
+    them is carried by the vocal and an 808 bassline does not state one.
+    Transposing across any of these would move a vocal that is already
+    in the right place.
     """
+    if a.pc == b.pc:
+        return True
     if _family_root(a) == _family_root(b):
         return True
     gap = (_family_root(a) - _family_root(b)) % 12
@@ -689,16 +695,21 @@ def _candidates(dna: dict, top: "Key", conf: float) -> List[Tuple["Key", float]]
     return out
 
 
-def _best_compatible_pair(vdna: dict, bdna: dict, v_key: "Key", b_key: "Key"):
+def _best_compatible_pair(vdna: dict, bdna: dict, v_key: "Key", b_key: "Key",
+                          v_conf: float = 0.0, b_conf: float = 0.0):
     """Highest-scoring (vocal, beat) candidate pair that needs no transpose.
 
     Scored as the product of the two candidates' own scores, so a strong
-    agreement one row down beats a weak agreement at the top.
+    agreement one row down beats a weak agreement at the top. The
+    confidences are the fallback scores for a document that carries no
+    candidate list at all -- passing zero there made every such pair
+    score zero and lose to the "no pair found" case, which transposed
+    keys that were already compatible.
     """
     best = None
     best_score = 0.0
-    for v_cand, v_score in _candidates(vdna, v_key, 0.0):
-        for b_cand, b_score in _candidates(bdna, b_key, 0.0):
+    for v_cand, v_score in _candidates(vdna, v_key, v_conf):
+        for b_cand, b_score in _candidates(bdna, b_key, b_conf):
             if not _related(v_cand, b_cand):
                 continue
             score = float(v_score) * float(b_score)

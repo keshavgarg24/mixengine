@@ -244,10 +244,12 @@ def extract(path: str,
         "quality": quality.to_dict(),
     }
 
-    log.info("  %s: %.1f BPM (%s) | %s | pocket %.2f | %d sections | %.1fs",
+    log.info("  %s: %.1f BPM (%s) | %s | pocket %.2f | %d sections | %.1fs "
+             "(analysed in %.0fs)",
              beat_id, dna["bpm"], bpm_src,
              key_use.name if key_use else "atonal",
-             pocket, len(sections), dna["analysis_seconds"])
+             pocket, len(sections), dna["duration_s"],
+             dna["analysis_seconds"])
 
     if bpm_tag and not bpm_verified:
         log.warning("  %s: tagged tempo %.0f disagrees with detected %.1f",
