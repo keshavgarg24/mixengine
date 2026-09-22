@@ -301,11 +301,25 @@ def _collect_repairs(r: CriticReport) -> Dict[str, float]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _longest_silence(y: np.ndarray, sr: int) -> float:
+    """Longest silent run *inside* the song.
+
+    Silence at the very start or end is not a dropout -- a track begins
+    and a track ends, and the render's own reverb tail decays into the
+    latter. Counting it flagged a beat's outro as an arrangement gap on
+    a render that was otherwise continuous throughout.
+    """
     r = dsp.frame_rms(y, int(0.05 * sr), int(0.025 * sr))
     if r.size == 0:
         return 0.0
     db = dsp.lin_to_db(r)
     quiet = db < (np.percentile(db, 95) - 45.0)
+
+    # Trim leading and trailing quiet before looking for a gap.
+    loud = np.flatnonzero(~quiet)
+    if loud.size == 0:
+        return 0.0
+    quiet = quiet[loud[0]:loud[-1] + 1]
+
     longest, run = 0, 0
     for q in quiet:
         run = run + 1 if q else 0
