@@ -51,7 +51,7 @@ class Gate:
         # read as one -- "true peak exceeds the limit" beside a green
         # chip -- so serialise a neutral statement instead. An info gate
         # passed by design and its message *is* the information.
-        if self.passed and self.severity != "info":
+        if self.passed and self.severity not in ("info", "skipped"):
             d["message"] = ("%s within limit" % self.name
                             if self.value is None or self.limit is None else
                             "%s %g within limit %g" % (self.name, self.value,
@@ -118,8 +118,17 @@ def evaluate(mix: np.ndarray, sr: int, variant: str,
              beat_dna: Optional[dict] = None,
              rendered_vocal: Optional[np.ndarray] = None,
              master_report: Optional[dict] = None,
-             semitone_shift: int = 0) -> CriticReport:
-    """Evaluate a rendered mix."""
+             semitone_shift: int = 0,
+             tuning_report: Optional[dict] = None) -> CriticReport:
+    """Evaluate a rendered mix.
+
+    `tuning_report` is what the tuner actually did. Given it, the tuning
+    gate is scored from that record rather than by re-tracking pitch over
+    the finished vocal -- a second full CREPE pass that cost 197 seconds
+    on a 36-second render, and that measured the singer's own intonation
+    against an assumed key whenever the engine had rightly left the
+    pitch alone.
+    """
     r = CriticReport(variant=variant)
     c = CFG.critic
     y = dsp.as_2d(mix)
@@ -193,7 +202,32 @@ def evaluate(mix: np.ndarray, sr: int, variant: str,
                 c.max_sync_error_ms, "warning",
                 f"vocal onsets are {sync_err:.0f} ms off the beat grid"))
 
-    if rendered_vocal is not None and vocal_dna is not None:
+    if tuning_report is not None:
+        # The tuner already measured every note it considered. Asking a
+        # second pitch tracker to grade the result adds no information
+        # the engine does not already hold.
+        if tuning_report.get("enabled"):
+            considered = float(tuning_report.get("notes_considered") or 0)
+            corrected = float(tuning_report.get("notes_corrected") or 0)
+            mean_cents = float(tuning_report.get("mean_correction_cents") or 0)
+            moved = (corrected / considered) if considered else 0.0
+            value = mean_cents * moved
+            r.gates.append(Gate(
+                "tuning", value <= c.max_tuning_error_cents, round(value, 1),
+                c.max_tuning_error_cents, "warning",
+                f"moved {corrected:.0f} of {considered:.0f} notes, "
+                f"mean {mean_cents:.0f} cents",
+                repair={"tune_strength": 0.25}))
+            harmonic = float(np.clip(1.0 - value / 100.0, 0.0, 1.0))
+        else:
+            # Tuning was deliberately skipped. The take's own intonation
+            # is the artist's, not a defect this render introduced, and
+            # scoring it would penalise the engine for restraint.
+            r.gates.append(Gate(
+                "tuning", True, None, c.max_tuning_error_cents, "skipped",
+                "tuning was not applied to this render"))
+            harmonic = 0.85
+    elif rendered_vocal is not None and vocal_dna is not None:
         tuning = _tuning_error(rendered_vocal, sr, beat_dna, semitone_shift)
         if tuning is not None:
             r.gates.append(Gate(

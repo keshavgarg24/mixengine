@@ -483,7 +483,9 @@ def render_variant(vocal_audio: np.ndarray, sr: int, vdna: dict,
     cr = critic.evaluate(mastered, sr, variant.key, profile, vdna, bdna,
                          rendered_vocal=vocal_in_mix,
                          master_report=master_report,
-                         semitone_shift=plan["beat_shift"])
+                         semitone_shift=plan["beat_shift"],
+                         tuning_report=tinfo.get(
+                             "tuning", {"enabled": False}))
     result.critic_report = cr.to_dict()
     result.score = cr.score
     result.warnings.extend(g.message for g in cr.errors)

@@ -508,8 +508,9 @@ def detect_relationship(vocal: np.ndarray, beat: np.ndarray, sr: int,
         if same_bounce:
             confidence = 0.9
             evidence = (f"same length to {duration_delta * 1000:.0f} ms and "
-                        f"same tempo ({v_bpm:.2f} vs {b_bpm:.2f} BPM) -- "
-                        f"bounced from one session")
+                        f"same tempo ({v_bpm:.2f} vs {b_bpm:.2f} BPM, "
+                        f"vocal read by {v_bpm_src}) -- bounced from "
+                        f"one session")
             if peak_is_clear:
                 evidence += f", aligned at {offset_s:+.2f}s"
         else:
