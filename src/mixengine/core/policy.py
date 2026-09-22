@@ -157,6 +157,13 @@ def plan(vdna: dict, bdna: dict, vocal_state: VocalState,
             % (vocal_state.tuned_fraction * 100, TUNING_DEAD_ZONE_CENTS))
 
     # ── Alignment ────────────────────────────────────────────────────
+    # Alignment is decided by the relationship, never by how finished the
+    # vocal is. Those answer different questions: `vocal_state` says how
+    # well the take was produced, `relationship` says whether it is in
+    # time with *this* beat. A polished vocal over a beat it never met is
+    # no more in time than a rough one, and treating its timing as a
+    # performance to be preserved -- which this did, at strength 0.2 --
+    # leaves it sitting on top of the beat instead of in it.
     if locked:
         alignment = StageDecision(
             True, 0.0, "single_offset",
@@ -164,13 +171,13 @@ def plan(vdna: dict, bdna: dict, vocal_state: VocalState,
             "nothing else" % relationship.offset_s)
     elif finished:
         alignment = StageDecision(
-            True, 0.2, "phrase_anchor",
-            "a finished vocal's timing is a performance; anchoring phrases "
-            "to downbeats without quantising inside them")
+            True, 0.7, "grid_align",
+            "a finished vocal, but not recorded to this beat; bringing its "
+            "timing onto this grid while keeping the feel inside phrases")
     else:
         alignment = StageDecision(
-            True, 0.45, "grid_nudge",
-            "a raw take over a new beat; nudging onsets toward the grid")
+            True, 0.8, "grid_align",
+            "a raw take over a new beat; bringing its timing onto this grid")
     if intents.timing is not None:
         alignment = StageDecision(
             enabled=intents.timing > 0.0, strength=intents.timing,

@@ -661,7 +661,7 @@ def decide_key(vdna: dict, bdna: dict,
                            "only the vocal has a key (%s)" % v_key,
                            True, tuple(v_key.scale_pcs))
 
-    pair = _best_compatible_pair(vdna, bdna, v_key, b_key)
+    pair = _best_compatible_pair(vdna, bdna, v_key, b_key, v_conf, b_conf)
     if pair is not None:
         v_cand, b_cand, score = pair
         # The mode comes from the vocal: a sung line states its third, a

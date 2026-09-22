@@ -297,7 +297,10 @@ def render_variant(vocal_audio: np.ndarray, sr: int, vdna: dict,
         genre_strength = groove_mod.quantize_strength(
             bdna.get("genre"), perf,
             grid_consistency=float(bdna.get("grid_stability") or 0.0))
-        if render_plan is None:
+        # The genre knows how hard its own grid should be pulled. The plan
+        # decides *whether* to align; it should not talk the engine down
+        # below what the style calls for once it has.
+        if render_plan is None or render_plan.alignment.method == "grid_align":
             q_strength = max(q_strength, genre_strength)
         aligned = False
     if q_strength > 0.02 and len(beats_s) > 2:
