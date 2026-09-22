@@ -30,6 +30,12 @@ TUNED_WINDOW_CENTS = 20.0
 
 # Below this fraction of note time on the grid, the take is raw.
 TUNED_FRACTION_RAW = 0.55
+
+# A mean deviation at or under this reads as tuned whatever the fraction
+# says. Both references put deliberate intonation well inside it: Antares
+# calls 50-100 cents "significantly off", Melodyne leaves notes "already
+# quite close" alone. No untuned singer averages 15 cents across a take.
+TUNED_DEVIATION_CENTS = 22.0
 TUNED_FRACTION_SURE = 0.80
 
 # A raw take's phrases vary 3-6 dB. A mixed vocal has been levelled.
@@ -150,7 +156,18 @@ def detect_vocal_state(y: np.ndarray, sr: int, vdna: dict,
                                    and rt60 > RT60_NOTABLE_S),
             n_notes=len(notes))
 
-    is_tuned = tuned_fraction >= TUNED_FRACTION_RAW
+    # Two independent readings of the same question, because either can
+    # sit just the wrong side of a threshold. The fraction asks how much
+    # note *time* landed on a semitone centre; the mean deviation asks
+    # how far off the misses were. A take can spend 54% of its time on
+    # the grid -- one point under the line -- while averaging 15 cents,
+    # which no untuned singer does. Trusting the fraction alone sent a
+    # mixed vocal down the full production chain and retuned 221 of its
+    # 315 notes.
+    deviation = float(vdna.get("tuning_deviation_cents") or 0.0)
+    is_tuned = (tuned_fraction >= TUNED_FRACTION_RAW
+                or (0.0 < deviation <= TUNED_DEVIATION_CENTS
+                    and len(notes) >= MIN_NOTES_FOR_CONFIDENCE))
     is_levelled = 0.0 < spread <= SPREAD_MIXED_DB
 
     if is_tuned and is_levelled:
@@ -168,6 +185,8 @@ def detect_vocal_state(y: np.ndarray, sr: int, vdna: dict,
     confidence = _state_confidence(tuned_fraction, spread, len(notes))
 
     bits = [f"{tuned_fraction * 100:.0f}% of note time on the grid"]
+    if deviation > 0:
+        bits.append(f"averaging {deviation:.0f} cents off")
     if spread > 0:
         bits.append(f"phrases vary {spread:.1f} dB")
     if rt60 > RT60_NOTABLE_S:
