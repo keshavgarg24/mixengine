@@ -121,7 +121,8 @@ def render_variant(vocal_audio: np.ndarray, sr: int, vdna: dict,
                    beat_audio: Optional[np.ndarray] = None,
                    stems: Optional[Dict[str, np.ndarray]] = None,
                    extra_overrides: Optional[dict] = None,
-                   render_plan: Optional[Any] = None) -> RenderResult:
+                   render_plan: Optional[Any] = None,
+                   intents: Optional[Any] = None) -> RenderResult:
     """Render one (vocal, beat, variant) combination.
 
     `render_plan` is a `core.policy.RenderPlan` deciding what each stage
@@ -235,6 +236,25 @@ def render_variant(vocal_audio: np.ndarray, sr: int, vdna: dict,
     else:
         v, align_info = transform.align_to_downbeat(
             v, sr, phrases, downbeats_s, beats_s)
+
+    # A nudge the user asked for, in beats of this beat's own tempo.
+    # Where a vocal's bars sit against a beat it was never recorded to is
+    # genuinely ambiguous -- onset correlation, phrase-start scoring and
+    # accent-phase matching were each measured against known-good pairs
+    # and none resolved it reliably -- so the engine places it as well as
+    # it can and leaves the last word to the person listening.
+    nudge_beats = getattr(intents, "nudge", None) if intents else None
+    if nudge_beats:
+        beat_s = (60.0 / float(bdna["bpm"])) if bdna.get("bpm") else 0.0
+        if beat_s > 0:
+            shift = float(nudge_beats) * beat_s
+            v = _apply_offset(v, sr, shift)
+            phrases = analysis.detect_phrases(v, sr)
+            align_info = dict(align_info)
+            align_info["nudge_beats"] = float(nudge_beats)
+            align_info["nudge_s"] = round(shift, 4)
+            log.info("  nudge: %+.2f beats (%+.3fs) as you asked",
+                     nudge_beats, shift)
     tinfo["alignment"] = align_info
     phrases = analysis.detect_phrases(v, sr)
 
@@ -691,7 +711,8 @@ def run(vocal_path: str, catalog: Sequence[dict], out_dir: str,
             try:
                 r = render_variant(vocal_audio, sr, vdna, bdna, m, variant,
                                    out_path, beat_audio=beat_audio,
-                                   stems=stems, render_plan=render_plan)
+                                   stems=stems, render_plan=render_plan,
+                                   intents=intents)
             except Exception as e:
                 log.exception("render failed for %s/%s: %s", m.beat_id, variant.key, e)
                 # Record the failure instead of dropping it. The engine's
@@ -724,7 +745,8 @@ def run(vocal_path: str, catalog: Sequence[dict], out_dir: str,
                     r = render_variant(vocal_audio, sr, vdna, bdna, m, variant,
                                        attempt_path, beat_audio=beat_audio,
                                        stems=stems, extra_overrides=cumulative,
-                                       render_plan=render_plan)
+                                       render_plan=render_plan,
+                                       intents=intents)
                 except Exception as e:
                     log.warning("repair render failed: %s", e)
                     break

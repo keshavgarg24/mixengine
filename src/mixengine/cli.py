@@ -192,6 +192,7 @@ def cmd_match(args) -> int:
 def cmd_render(args) -> int:
     from .analysis import beat_dna
     from .audio import pipeline
+    from .core.intents import Intents
     catalog = beat_dna.load_catalog(args.dna or CFG.paths.beat_dna)
     if not catalog:
         print("No beat DNA found. Run 'analyze-beats' first.")
@@ -202,7 +203,9 @@ def cmd_render(args) -> int:
         out_dir=args.out or CFG.paths.outputs,
         n_beats=args.beats, variants_per_beat=args.variants,
         user_bpm=args.bpm, user_key=args.key,
-        beat_ids=args.beat_id)
+        beat_ids=args.beat_id,
+        intents=Intents.from_dict({"bpm": args.bpm, "key": args.key,
+                                   "nudge": getattr(args, "nudge", None)}))
 
     if out["status"] != "ok":
         print(f"\n{out.get('message') or out.get('error')}")
@@ -299,6 +302,11 @@ def main(argv=None) -> int:
                     help="force specific beat ids instead of matching")
     rd.add_argument("--bpm", type=float, default=None)
     rd.add_argument("--key", default=None)
+    rd.add_argument("--nudge", type=float, default=None,
+                    help="shift the vocal by N beats (+ later, - earlier). "
+                         "Where a vocal's bars sit against a beat it was "
+                         "not recorded to is genuinely ambiguous; this is "
+                         "the last word.")
     rd.set_defaults(func=cmd_render)
 
     sv = sub.add_parser("serve", help="run the local web interface")

@@ -252,6 +252,71 @@ def plan_pitch_shift(semitones: int, has_stems: bool) -> dict:
 # Alignment
 # ─────────────────────────────────────────────────────────────────────────────
 
+# A winning bar phase must stand this far above the average one before
+# it is trusted. Material with no bar-level structure correlates flat.
+ACCENT_CONFIDENCE = 1.8
+
+
+def _accent_profile(y: np.ndarray, sr: int, bar_s: float,
+                    bins: int = 48) -> Optional[np.ndarray]:
+    """Where a track puts its weight inside a bar.
+
+    Onset strength folded modulo one bar. Rap and the beat under it both
+    accent the same places -- the one, the backbeat, the syncopations a
+    style favours -- so the shape of this profile is what "in time with
+    this beat" actually refers to, and it survives material where phrase
+    boundaries are breath groups rather than bar lines.
+    """
+    try:
+        import librosa
+        mono = np.ascontiguousarray(dsp.to_mono(y).astype(np.float32))
+        hop = 256
+        env = librosa.onset.onset_strength(y=mono, sr=sr, hop_length=hop)
+        if env.size < bins:
+            return None
+        times = np.arange(env.size) * hop / float(sr)
+        idx = ((times % bar_s) / bar_s * bins).astype(int) % bins
+        prof = np.bincount(idx, weights=env, minlength=bins).astype(np.float64)
+        total = prof.sum()
+        if total <= 0:
+            return None
+        prof /= total
+        return prof
+    except Exception:                                    # noqa: BLE001
+        return None
+
+
+def _accent_alignment(vocal: np.ndarray, beat: np.ndarray, sr: int,
+                      bar_s: float, bins: int = 48
+                      ) -> Optional[Tuple[float, float]]:
+    """Sub-bar shift that lines the vocal's accents up with the beat's.
+
+    Circular cross-correlation of the two accent profiles. Returns the
+    shift in seconds within +/- half a bar, and how far the winning
+    phase stands above the average one -- a take with no bar-level
+    structure produces a flat correlation and is reported as such rather
+    than given a confident wrong answer.
+    """
+    pv = _accent_profile(vocal, sr, bar_s, bins)
+    pb = _accent_profile(beat, sr, bar_s, bins)
+    if pv is None or pb is None:
+        return None
+
+    pv = pv - pv.mean()
+    pb = pb - pb.mean()
+    corr = np.real(np.fft.ifft(np.fft.fft(pb) * np.conj(np.fft.fft(pv))))
+    k = int(np.argmax(corr))
+    peak = float(corr[k])
+    spread = float(np.std(corr))
+    if spread <= 0 or peak <= 0:
+        return None
+
+    shift = (k / bins) * bar_s
+    if shift > bar_s / 2.0:
+        shift -= bar_s                       # nearest representative
+    return float(shift), float(peak / spread)
+
+
 def _placement_candidates(downbeats: np.ndarray,
                           beats_s: Optional[np.ndarray],
                           first_onset_s: float,
@@ -298,7 +363,9 @@ def align_to_downbeat(vocal: np.ndarray, sr: int,
                       phrases_samples: Sequence[Tuple[int, int]],
                       downbeats_s: np.ndarray,
                       beats_s: Optional[np.ndarray] = None,
-                      allow_beat_level: bool = True) -> Tuple[np.ndarray, dict]:
+                      allow_beat_level: bool = True,
+                      beat_audio: Optional[np.ndarray] = None
+                      ) -> Tuple[np.ndarray, dict]:
     """Shift the vocal so its first phrase begins on a bar line.
 
     The original engine aligned the first detected vocal onset to the first
@@ -326,18 +393,32 @@ def align_to_downbeat(vocal: np.ndarray, sr: int,
     # starts land on bar lines, and take the best. A genuine pickup still
     # wins when it is one: shifting so the pickup's own phrase begins a
     # bar leaves every later phrase off the grid, and scores badly.
-    starts = np.array([s / sr for s, _ in phrases_samples], dtype=np.float64)
-    candidates = _placement_candidates(grid, beats_s, first_onset_s,
-                                       allow_beat_level)
+    bar_s = float(np.median(np.diff(grid))) if grid.size >= 2 else 0.0
 
-    best_offset, best_cost, method = 0.0, np.inf, "none"
-    for target, label in candidates:
-        offset = float(target - first_onset_s)
-        cost = _bar_phase_cost(starts + offset, grid)
-        if cost < best_cost:
-            best_offset, best_cost, method = offset, cost, label
+    # First ask the audio directly: which sub-bar shift makes the vocal's
+    # accents land where the beat puts its own? That is what being in
+    # time with a beat means, and unlike phrase starts it does not assume
+    # a rapper begins each breath group on a bar line.
+    accent = (_accent_alignment(vocal, beat_audio, sr, bar_s)
+              if (beat_audio is not None and bar_s > 0) else None)
 
-    offset_s = best_offset
+    if accent is not None and accent[1] >= ACCENT_CONFIDENCE:
+        offset_s, sharpness = accent
+        method = "accent_phase"
+        info["accent_sharpness"] = round(sharpness, 2)
+    else:
+        starts = np.array([s / sr for s, _ in phrases_samples],
+                          dtype=np.float64)
+        candidates = _placement_candidates(grid, beats_s, first_onset_s,
+                                           allow_beat_level)
+        best_offset, best_cost, method = 0.0, np.inf, "none"
+        for cand, label in candidates:
+            offset = float(cand - first_onset_s)
+            cost = _bar_phase_cost(starts + offset, grid)
+            if cost < best_cost:
+                best_offset, best_cost, method = offset, cost, label
+        offset_s = best_offset
+
     target = first_onset_s + offset_s
 
     # Cap the move so a misdetected phrase start cannot displace the whole

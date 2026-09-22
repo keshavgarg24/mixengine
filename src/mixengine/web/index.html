@@ -143,6 +143,21 @@
         </label>
 
         <label class="field">
+          <span>Nudge the vocal</span>
+          <select id="i-nudge">
+            <option value="auto">where the engine put it</option>
+            <option value="-2">two beats earlier</option>
+            <option value="-1">a beat earlier</option>
+            <option value="-0.5">half a beat earlier</option>
+            <option value="0.5">half a beat later</option>
+            <option value="1">a beat later</option>
+            <option value="2">two beats later</option>
+            <option value="4">a bar later</option>
+          </select>
+          <small>If the vocal sits off the bar, move it and run again.</small>
+        </label>
+
+        <label class="field">
           <span>Key</span>
           <input type="text" id="i-key" placeholder="work it out" spellcheck="false">
           <small>Such as F minor. Yours wins over anything detected.</small>

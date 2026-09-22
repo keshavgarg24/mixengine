@@ -88,6 +88,7 @@ class Intents:
     space: Optional[str] = None            # keep | match | add
     separate: Optional[str] = None         # never | always
     loudness: Optional[float] = None       # target LUFS
+    nudge: Optional[float] = None          # beats; +1 = a beat later
 
     AUTO: ClassVar["Intents"]
 
@@ -109,6 +110,7 @@ class Intents:
             space=_choice(d.get("space"), SPACES, "space"),
             separate=_choice(d.get("separate"), SEPARATIONS, "separate"),
             loudness=_number(d.get("loudness"), "loudness", -30.0, -3.0),
+            nudge=_number(d.get("nudge"), "nudge", -16.0, 16.0),
         )
 
     def to_dict(self) -> Dict[str, Any]:
