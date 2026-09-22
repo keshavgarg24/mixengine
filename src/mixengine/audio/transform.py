@@ -252,6 +252,48 @@ def plan_pitch_shift(semitones: int, has_stems: bool) -> dict:
 # Alignment
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _placement_candidates(downbeats: np.ndarray,
+                          beats_s: Optional[np.ndarray],
+                          first_onset_s: float,
+                          allow_beat_level: bool) -> List[Tuple[float, str]]:
+    """Bar-line placements worth scoring for the first phrase.
+
+    The two downbeats either side of the first onset, plus -- when a
+    pickup is plausible -- the beats around it, since a take that leads
+    into bar one starts fractionally before a downbeat rather than on it.
+    """
+    out: List[Tuple[float, str]] = []
+    if downbeats.size:
+        idx = int(np.searchsorted(downbeats, first_onset_s))
+        for i in (idx - 1, idx, idx + 1):
+            if 0 <= i < downbeats.size:
+                out.append((float(downbeats[i]), "downbeat"))
+    if allow_beat_level and beats_s is not None and len(beats_s):
+        b = np.asarray(beats_s, dtype=np.float64)
+        idx = int(np.searchsorted(b, first_onset_s))
+        for i in (idx - 1, idx):
+            if 0 <= i < b.size:
+                out.append((float(b[i]), "beat_pickup"))
+    return out or [(first_onset_s, "none")]
+
+
+def _bar_phase_cost(starts: np.ndarray, downbeats: np.ndarray) -> float:
+    """Mean distance from each phrase start to the nearest bar line.
+
+    Normalised by the bar so the number means "fraction of a bar out",
+    and capped at half a bar because a phrase that genuinely begins
+    mid-bar should not dominate the vote for every other phrase.
+    """
+    if starts.size == 0 or downbeats.size < 2:
+        return float("inf")
+    bar = float(np.median(np.diff(downbeats)))
+    if bar <= 0:
+        return float("inf")
+    phase = np.abs((starts[:, None] - downbeats[None, :]))
+    nearest = phase.min(axis=1)
+    return float(np.mean(np.minimum(nearest, bar / 2.0)) / bar)
+
+
 def align_to_downbeat(vocal: np.ndarray, sr: int,
                       phrases_samples: Sequence[Tuple[int, int]],
                       downbeats_s: np.ndarray,
@@ -272,19 +314,31 @@ def align_to_downbeat(vocal: np.ndarray, sr: int,
         return v, info
 
     first_onset_s = phrases_samples[0][0] / sr
-
     grid = np.asarray(downbeats_s, dtype=np.float64)
-    method = "downbeat"
-    if allow_beat_level and beats_s is not None and len(beats_s) > 0:
-        # Prefer a downbeat, but if a beat-level position is dramatically
-        # closer, the vocal probably starts on a pickup.
-        db_t, db_d = _nearest(grid, first_onset_s)
-        b_t, b_d = _nearest(np.asarray(beats_s, dtype=np.float64), first_onset_s)
-        if b_d < db_d * 0.4:
-            grid, method = np.asarray(beats_s, dtype=np.float64), "beat_pickup"
 
-    target, _ = _nearest(grid, first_onset_s)
-    offset_s = float(target - first_onset_s)
+    # Where the bar line falls is a question about the whole vocal, not
+    # about its first syllable. Deciding it from one onset let a take
+    # whose first breath happened to sit 0.12s from beat 3 pull every
+    # phrase after it onto beat 3 -- perfectly on the sixteenth grid, and
+    # half a bar out of the music.
+    #
+    # So score each candidate placement by how well *all* the phrase
+    # starts land on bar lines, and take the best. A genuine pickup still
+    # wins when it is one: shifting so the pickup's own phrase begins a
+    # bar leaves every later phrase off the grid, and scores badly.
+    starts = np.array([s / sr for s, _ in phrases_samples], dtype=np.float64)
+    candidates = _placement_candidates(grid, beats_s, first_onset_s,
+                                       allow_beat_level)
+
+    best_offset, best_cost, method = 0.0, np.inf, "none"
+    for target, label in candidates:
+        offset = float(target - first_onset_s)
+        cost = _bar_phase_cost(starts + offset, grid)
+        if cost < best_cost:
+            best_offset, best_cost, method = offset, cost, label
+
+    offset_s = best_offset
+    target = first_onset_s + offset_s
 
     # Cap the move so a misdetected phrase start cannot displace the whole
     # vocal by many seconds.
