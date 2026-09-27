@@ -250,7 +250,22 @@ function askQuestions(questions) {
       ${q.reason ? `<p class="ask-why">${esc(q.reason)}</p>` : ''}
     </fieldset>`).join('');
   $('#ask').hidden = false;
+  syncAskButton();
   $('#ask').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/**
+ * The submit button says what it will do.
+ *
+ * "I'll upload a cleaner take" does not render anything — it frees the
+ * slot for the next take. A button that still read "Make the render"
+ * underneath that choice described the opposite of what it did.
+ */
+function syncAskButton() {
+  const { refused } = readAnswers();
+  $('#ask-go span').textContent = !refused ? 'Make the render'
+    : refused === 'length' ? 'Upload the full take'
+      : 'Upload a cleaner take';
 }
 
 function readAnswers() {
@@ -346,6 +361,7 @@ export function init() {
   on($('#i-key'), 'input', refreshTreatState);
   on($('#go'), 'click', run);
   on($('#ask-form'), 'submit', submitAnswers);
+  on($('#ask-list'), 'change', syncAskButton);
   on($('#ask-back'), 'click', () => {
     $('#ask').hidden = true;
     $('#slot-vocal').scrollIntoView({ behavior: 'smooth', block: 'center' });
