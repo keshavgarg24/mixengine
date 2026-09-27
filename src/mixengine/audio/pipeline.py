@@ -52,6 +52,10 @@ class RenderResult:
     master_report: Dict = field(default_factory=dict)
     critic_report: Dict = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
+    # What was done to the files on the way to this render, in words for
+    # the person who uploaded them. Repairs, restoration, what was
+    # silenced, moved, stretched, looped or trimmed.
+    notes: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -64,8 +68,68 @@ class RenderResult:
             "render_seconds": round(self.render_seconds, 1),
             "transform": self.transform, "mix": self.mix_report,
             "master": self.master_report, "critic": self.critic_report,
-            "warnings": self.warnings,
+            "warnings": self.warnings, "notes": self.notes,
         }
+
+
+def _render_notes(vdna: dict, tinfo: dict) -> List[str]:
+    """Every change made to the files, as sentences.
+
+    A person whose take was flipped, denoised, cut, moved and stretched
+    used to get a song and no word about any of it. Each stage already
+    wrote what it did into its report; this reads those reports back in
+    plain language, and says nothing a stage did not do.
+    """
+    notes: List[str] = list(vdna.get("repairs") or [])
+    r = vdna.get("restoration") or {}
+    if r.get("hum_lines_hz"):
+        notes.append("a hum at %s Hz was notched out of the vocal"
+                     % ", ".join("%.0f" % f for f in r["hum_lines_hz"]))
+    if r.get("separator_denoise"):
+        notes.append("the voice was separated from the background noise "
+                     "under it")
+    elif r.get("denoise"):
+        notes.append("background noise was reduced under the vocal")
+    if r.get("dereverb"):
+        notes.append("room reverb was reduced on the vocal")
+    if r.get("gap_gate"):
+        notes.append("the gaps between lines were muted")
+    span = tinfo.get("performance_span") or {}
+    if span.get("decision") == "trim" and span.get("note"):
+        notes.append("the vocal was %s" % span["note"])
+    ts = tinfo.get("time_stretch") or {}
+    try:
+        ratio = float(ts.get("ratio") or 1.0)
+    except (TypeError, ValueError):
+        ratio = 1.0
+    if abs(ratio - 1.0) >= 0.0005:
+        notes.append("the vocal was %s by %.2f%% to sit on the beat's tempo"
+                     % ("slowed" if ratio > 1 else "sped up",
+                        abs(ratio - 1.0) * 100))
+    pl = (tinfo.get("alignment") or {}).get("placement") or {}
+    if pl.get("method") == "section_entry" and pl.get("section"):
+        notes.append("the vocal was moved %+.2f s so its first bar lands "
+                     "where the beat's %s arrives (%.1f s)"
+                     % (float(pl.get("moved_s") or 0.0), pl["section"],
+                        float(pl.get("entry_s") or 0.0)))
+    bf = tinfo.get("beat_fit") or {}
+    orig, res = bf.get("original_len_s"), bf.get("result_len_s")
+    if bf.get("action") == "looped" and bf.get("loop_s"):
+        a, b = bf["loop_s"]
+        notes.append("the beat (%.0f s) was shorter than the take; its "
+                     "%.0f-%.0f s section was looped to cover %.0f s"
+                     % (float(orig or 0), float(a), float(b), float(res or 0)))
+    elif bf.get("action") == "trimmed_to_bar":
+        notes.append("the beat was trimmed on a bar line from %.0f s to "
+                     "%.0f s to fit the take" % (float(orig or 0), float(res or 0)))
+    elif bf.get("action") == "padded":
+        notes.append("the beat was padded with silence from %.0f s to %.0f s "
+                     "for the vocal's tail" % (float(orig or 0),
+                                               float(bf.get("target_len_s") or 0)))
+    if vdna.get("performance_source") == "user":
+        notes.append("treated as %s, as you said"
+                     % str(vdna.get("performance_type") or "").replace("_", " "))
+    return notes
 
 
 
@@ -555,6 +619,7 @@ def render_variant(vocal_audio: np.ndarray, sr: int, vdna: dict,
     result.path = out_path
     result.duration_s = len(mastered) / sr
     result.transform = tinfo
+    result.notes = _render_notes(vdna, tinfo)
     result.mix_report = {"vocal_chain": vocal_chain, "beat_chain": beat_chain,
                          "balance": balance, "sends": send_info}
     result.master_report = master_report

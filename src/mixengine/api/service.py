@@ -160,7 +160,10 @@ class EngineService:
                 job.stage = "complete"
             except Exception as e:
                 job.status = JOB_FAILED
-                job.error = "%s: %s" % (type(e).__name__, e)
+                # The engine's own errors are written for the person who
+                # uploaded the file; a foreign one keeps its type for the log.
+                own = isinstance(e, (ValueError, RuntimeError)) and str(e).strip()
+                job.error = str(e) if own else "%s: %s" % (type(e).__name__, e)
                 # Keep the traceback server-side; the client gets the summary.
                 log.exception("job %s (%s) failed", job.id, job.kind)
             finally:
@@ -560,7 +563,7 @@ def _vocal_brief(vdna: dict) -> dict:
             "key_confidence", "performance_type", "performance_confidence",
             "performance_reason", "performance_span", "noise",
             "noise_floor_db", "restoration", "summary", "warnings",
-            "vocal_state", "conditioned_path")
+            "repairs", "vocal_state", "conditioned_path")
     return {k: vdna.get(k) for k in keep if k in vdna}
 
 
@@ -579,4 +582,7 @@ def _beat_brief(bdna: dict) -> dict:
         "genre": bdna.get("genre"),
         "downbeats": (bdna.get("downbeats") or [])[:64],
         "sections": bdna.get("sections") or [],
+        # What the loader changed about the file, and what it noticed.
+        "repairs": list((bdna.get("quality") or {}).get("repairs") or []),
+        "warnings": list((bdna.get("quality") or {}).get("warnings") or []),
     }

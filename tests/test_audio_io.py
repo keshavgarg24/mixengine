@@ -44,7 +44,7 @@ class TestInvertedStereo(unittest.TestCase):
         y, _, q = self._load(self.voice, -self.voice)
         self.assertTrue(q.is_inverted_stereo)
         self.assertFalse(q.is_silent)
-        self.assertTrue(any("polarity" in w for w in q.warnings))
+        self.assertTrue(any("polarity" in r for r in q.repairs))
         mono = y.mean(axis=1)
         self.assertGreater(np.std(mono), 0.9 * np.std(self.voice))
         # Flipped back, the two channels are one signal: collapsed to mono.
@@ -68,6 +68,63 @@ class TestInvertedStereo(unittest.TestCase):
         y, _, q = self._load(self.voice, np.zeros_like(self.voice))
         self.assertFalse(q.is_inverted_stereo)
         self.assertFalse(q.is_silent)
+
+
+class TestWhatLoadTellsThePerson(unittest.TestCase):
+    """Every change made on the way in is said in words, and a file that
+    cannot be read is refused in words."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def path(self, name):
+        return os.path.join(self.tmp.name, name)
+
+    def test_a_damaged_file_is_refused_with_its_name_and_a_way_forward(self):
+        bad = self.path("take.wav")
+        with open(bad, "wb") as f:
+            f.write(b"RIFF" + bytes(range(256)) * 200)
+        for call in (audio_io.decode_check, lambda p: audio_io.load(p, sr=SR)):
+            with self.assertRaises(ValueError) as cm:
+                call(bad)
+            msg = str(cm.exception)
+            self.assertIn("take.wav", msg)
+            self.assertIn("could not be decoded", msg)
+            self.assertIn("WAV or MP3", msg)
+
+    def test_a_good_file_passes_the_decode_check(self):
+        good = self.path("take.wav")
+        sf.write(good, _voice(), SR, subtype="FLOAT")
+        audio_io.decode_check(good)
+
+    def test_repairs_are_listed_in_words(self):
+        voice = _voice()
+        clipped = np.clip(voice * 8, -1, 1) + 0.2
+        p = self.path("take.wav")
+        sf.write(p, np.stack([clipped, clipped], 1), SR, subtype="FLOAT")
+        y, _, q = audio_io.load(p, sr=SR)
+        text = " / ".join(q.repairs)
+        self.assertIn("DC offset", text)
+        self.assertIn("clipped peaks", text)
+        self.assertIn("identical", text)
+        self.assertEqual(y.shape[1], 1)
+        self.assertLess(abs(float(y.mean())), 1e-3)
+
+    def test_a_low_rate_file_says_what_it_lost(self):
+        p = self.path("phone.wav")
+        sf.write(p, _voice()[::6], SR // 6, subtype="FLOAT")
+        _, _, q = audio_io.load(p, sr=SR)
+        self.assertTrue(any("resampled from %d Hz" % (SR // 6) in r
+                            for r in q.repairs), q.repairs)
+
+    def test_a_clean_file_needs_no_repair(self):
+        p = self.path("take.wav")
+        sf.write(p, _voice(), SR, subtype="FLOAT")
+        _, _, q = audio_io.load(p, sr=SR)
+        self.assertEqual(q.repairs, [])
 
 
 if __name__ == "__main__":

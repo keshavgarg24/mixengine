@@ -337,6 +337,7 @@ def extract(path: str,
         "resonances": [[round(f, 1), round(e, 2)] for f, e in resonances],
         "noise_floor_db": round(noise_floor_db, 2),
         "quality": quality_post.to_dict(),
+        "repairs": list(quality.repairs),
         "warnings": list(quality_post.warnings) + extra_warnings,
     }
 

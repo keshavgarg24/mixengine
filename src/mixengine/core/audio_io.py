@@ -50,6 +50,9 @@ class AudioQuality:
     is_silent: bool = False
     estimated_rt60_s: float = 0.0
     warnings: list = field(default_factory=list)
+    # What `load` changed about the file before anything measured it, in
+    # words meant for the person who uploaded it.
+    repairs: list = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -95,9 +98,6 @@ def probe_quality(y: np.ndarray, sr: int, path: str = "") -> AudioQuality:
     corr = _channel_correlation(y2)
     if corr is not None and corr < INVERTED_STEREO_CORR:
         q.is_inverted_stereo = True
-        q.warnings.append(
-            "the two channels are polarity-inverted copies - one was flipped "
-            "so the voice does not cancel in mono")
         y2 = y2 * np.array([1.0, -1.0], dtype=y2.dtype)
         corr = -corr
     mono = dsp.to_mono(y2)
@@ -194,11 +194,50 @@ def _estimate_rt60(mono: np.ndarray, sr: int) -> float:
 # Load / save
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _undecodable(path: str, err: Exception) -> str:
+    why = str(err).strip() or "no decoder could read it"
+    return ("%s could not be decoded as audio (%s). It is not a valid audio "
+            "file or it is damaged; export it again as WAV or MP3 and upload "
+            "that." % (os.path.basename(path), why))
+
+
+def decode_check(path: str) -> None:
+    """Raise ValueError, in plain words, if `path` cannot be decoded.
+
+    Cheap: it reads a header, or at most one buffer. Run at upload time
+    so a damaged file is refused on the spot rather than failing a job a
+    minute later with a decoder's empty exception.
+    """
+    try:
+        import soundfile as sf
+        sf.info(path)
+        return
+    except Exception:
+        pass
+    try:
+        import audioread
+        with audioread.audio_open(path) as f:
+            for _ in f:
+                break
+    except Exception as e:
+        raise ValueError(_undecodable(path, e)) from e
+
+
+def _native_rate(path: str) -> Optional[int]:
+    try:
+        import librosa
+        return int(librosa.get_samplerate(path))
+    except Exception:
+        return None
+
+
 def load(path: str, sr: int = SR, mono: bool = False,
          normalize_format: bool = True) -> Tuple[np.ndarray, int, AudioQuality]:
     """Load audio as (n_samples, n_channels) float32 at `sr`.
 
-    Returns `(audio, sr, quality_report)`.
+    Returns `(audio, sr, quality_report)`. Every change made to the file
+    on the way in is written into `quality.repairs`, in words, so the
+    person who uploaded it can be told.
     """
     if not os.path.exists(path):
         raise FileNotFoundError(f"audio file not found: {path}")
@@ -206,22 +245,39 @@ def load(path: str, sr: int = SR, mono: bool = False,
         raise ValueError(f"audio file is empty: {path}")
 
     import librosa
-    y, _ = librosa.load(path, sr=sr, mono=mono)
+    try:
+        y, _ = librosa.load(path, sr=sr, mono=mono)
+    except Exception as e:
+        raise ValueError(_undecodable(path, e)) from e
     y = dsp.as_2d(y)
 
     q = probe_quality(y, sr, path)
 
     if normalize_format:
+        native = _native_rate(path)
+        if native and native < 44100:
+            q.repairs.append("resampled from %d Hz to %d Hz; the file has no "
+                             "sound above %d Hz" % (native, sr, native // 2))
         if abs(q.dc_offset) > 1e-4:
             y = y - np.mean(y, axis=0, keepdims=True)
+            q.repairs.append("a DC offset of %+.3f was removed" % q.dc_offset)
         if q.is_inverted_stereo and y.shape[1] == 2:
             y = y * np.array([1.0, -1.0], dtype=y.dtype)
-            log.info("flipped an inverted channel: %s", os.path.basename(path))
+            q.repairs.append("the two channels were polarity-inverted copies "
+                             "of each other; one was flipped back so the "
+                             "voice does not cancel in mono")
         if q.is_fake_stereo and y.shape[1] == 2:
             y = y[:, :1]
-            log.info("collapsed fake stereo to mono: %s", os.path.basename(path))
+            q.repairs.append("the two channels were identical and were "
+                             "collapsed to one")
         if q.clipping_pct > 0.05:
             y = declip(y)
+            q.repairs.append("clipped peaks were reconstructed (%.2f%% of "
+                             "samples sat at full scale); some distortion "
+                             "is baked into the recording"
+                             % q.clipping_pct)
+        for line in q.repairs:
+            log.info("%s: %s", os.path.basename(path), line)
 
     return y.astype(np.float32), sr, q
 

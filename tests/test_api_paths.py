@@ -92,6 +92,18 @@ class TestPathsMustBeUploads(unittest.TestCase):
         self.assertEqual(r.status_code, 422)
         self.assertIn("performance", r.json()["detail"])
 
+    def test_a_damaged_upload_is_refused_on_the_spot_and_not_kept(self):
+        garbage = b"RIFF" + bytes(range(256)) * 300
+        r = self.client.post("/api/prepare",
+                             files={"vocal": ("broken.wav", garbage, "audio/wav"),
+                                    "beat": ("broken.wav", garbage, "audio/wav")})
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertIn("could not be decoded", r.json()["detail"])
+        self.assertIn("broken.wav", r.json()["detail"])
+        kept = [f for _, _, fs in os.walk(os.path.join(self.root, "data", "vocals"))
+                for f in fs if f == "broken.wav"]
+        self.assertEqual(kept, [])
+
     def test_the_refusal_answer_is_accepted_as_a_value(self):
         """"rerecord" is what a blocking question defaults to; posting it
         must not look like a bad request."""

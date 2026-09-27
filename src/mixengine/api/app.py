@@ -28,6 +28,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from . import service
 from .service import EngineService
+from ..core import audio_io
 
 log = logging.getLogger("mixengine.api")
 
@@ -81,6 +82,14 @@ def create_app(data_root: str = "./data") -> FastAPI:
             dest = svc.ws.path(subdir, digest.hexdigest()[:12], safe)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             os.replace(tmp, dest)
+            # A file that cannot be decoded is refused here, in words,
+            # rather than failing the job a minute later with a decoder's
+            # empty exception.
+            try:
+                audio_io.decode_check(dest)
+            except ValueError as e:
+                os.remove(dest)
+                raise HTTPException(400, str(e))
         finally:
             if os.path.exists(tmp):
                 os.remove(tmp)

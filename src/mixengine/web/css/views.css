@@ -235,6 +235,20 @@
 }
 .plan-list .off { color: var(--ink-3); }
 
+/* What was done to the files: repairs, restoration, cuts, moves. */
+.notes {
+  list-style: none;
+  margin: 0 0 var(--s4);
+  padding: var(--s3) var(--s4);
+  display: grid;
+  gap: var(--s1);
+  border-left: 2px solid var(--ink-3);
+  color: var(--ink-2);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+}
+.notes li::before { content: "\2014\00a0"; color: var(--ink-3); }
+
 /* ── The result ───────────────────────────────────────────────────── */
 
 .result { margin-top: var(--s6); }

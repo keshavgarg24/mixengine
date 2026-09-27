@@ -150,9 +150,33 @@ function paintPlan(plan) {
     </li>`).join('');
 }
 
+/**
+ * What was done to the files, said plainly.
+ *
+ * The loader's repairs and the analysis' warnings arrive with the
+ * prepare step; what the render itself silenced, moved, stretched,
+ * looped or trimmed arrives with the render. Shown before the questions
+ * and again with the result, so nothing is done to a take unannounced.
+ */
+function paintNotes(id, lines) {
+  const seen = new Set();
+  const notes = (lines || []).filter(l => l && !seen.has(l) && seen.add(l));
+  const el = $(`#${id}`);
+  el.innerHTML = notes.map(n => `<li>${esc(n)}</li>`).join('');
+  el.hidden = notes.length === 0;
+}
+
+function preparedNotes() {
+  const v = prepared?.vocal || {};
+  const b = prepared?.beat || {};
+  return [...(v.repairs || []), ...(v.warnings || []),
+          ...(b.repairs || []), ...(b.warnings || [])];
+}
+
 function paintResult(render) {
   $('#run').hidden = true;
   $('#result').hidden = false;
+  paintNotes('result-notes', [...preparedNotes(), ...(render.notes || [])]);
   $('#result-score').textContent = `${render.score_pct}% · ${clock(render.duration_s)}`;
 
   const url = render.download;
@@ -249,6 +273,7 @@ function askQuestions(questions) {
       </div>
       ${q.reason ? `<p class="ask-why">${esc(q.reason)}</p>` : ''}
     </fieldset>`).join('');
+  paintNotes('ask-notes', preparedNotes());
   $('#ask').hidden = false;
   syncAskButton();
   $('#ask').scrollIntoView({ behavior: 'smooth', block: 'start' });
