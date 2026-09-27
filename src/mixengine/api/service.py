@@ -278,10 +278,15 @@ class EngineService:
 
         if job:
             job.stage, job.progress = "analysing vocal", 0.2
+        # The restored take is what gets rendered. Without a path for it
+        # the analysis was made on the cleaned vocal and the mix on the
+        # noisy original, which is how a take's fan noise reached the
+        # master untouched and then boosted.
         dna = vocal_dna.extract(
             audio_path, user_bpm=user_bpm, user_key=user_key, do_separation=True,
             reference_beat_path=(ref or {}).get("source_path"),
-            reference_beat_dna=ref)
+            reference_beat_dna=ref,
+            conditioned_out=self.ws.path("vocals", "%s-conditioned.wav" % key))
         if recorded_over and ref is None:
             dna.setdefault("warnings", []).append(
                 f"recorded_over={recorded_over!r} is not in the catalog; "

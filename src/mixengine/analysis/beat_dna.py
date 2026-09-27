@@ -186,6 +186,7 @@ def extract(path: str,
         "grid_stability": round(float(rhythm.grid_stability), 3),
         "downbeat_offset_s": (round(float(rhythm.downbeats[0]), 4)
                               if len(rhythm.downbeats) else 0.0),
+        "bar_anchor": rhythm.bar_anchor,
         "beats": [round(float(b), 4) for b in rhythm.beats],
         "downbeats": [round(float(b), 4) for b in rhythm.downbeats],
         "rhythm_method": rhythm.method,
@@ -352,6 +353,8 @@ def can_improve(doc: Optional[dict], want_stems: bool = False,
     """
     if not doc or doc.get("status") != "ok":
         return None
+    if "bar_anchor" not in doc:
+        return "bar lines were never checked against the drops"
     return improvement_over(doc.get("analysis_backends"),
                             want_separation=want_stems, now=now)
 

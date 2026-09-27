@@ -312,6 +312,51 @@ class TestAlignToGrid(unittest.TestCase):
         measured = dtw.grid_fit_error(find_clicks(out), grid) * 1000
         self.assertLess(abs(measured - rep["error_after_ms"]), 8.0)
 
+    def test_a_tempo_measured_upstream_is_used_instead_of_searched(self):
+        """The engine measures the take's tempo from its own bar-ones.
+        Handed that, the aligner removes exactly that drift and skips its
+        onset search, whose noise floor on dense material is wider than
+        the drift it is looking for."""
+        ctx = context()
+        grid = ctx.target_grid(16)
+        rng = np.random.default_rng(31)
+        sl = np.sort(rng.choice(np.arange(4, grid.size - 20), 120, replace=False))
+        times = np.sort(grid[sl] * 1.003 + rng.normal(0, 0.014, sl.size))
+        y = click_train(times, duration=float(times[-1]) + 2.0)
+
+        before = dtw.grid_fit_error(times, grid)
+        out, rep = aligner.align_to_grid(y[:, None], SR, times, ctx,
+                                         strength=0.85, drift_ratio=1.003)
+
+        self.assertEqual(rep["drift_source"], "vocal_grid")
+        self.assertTrue(rep["drift_corrected"])
+        self.assertAlmostEqual(rep["drift_slope"], 0.003, places=6)
+        span_ms = (times[-1] - times[0]) * (1.0 - 1.0 / 1.003) * 1000
+        self.assertAlmostEqual(rep["drift_removed_ms"], span_ms, delta=1.0)
+        after = dtw.grid_fit_error(find_clicks(out), grid)
+        self.assertLess(after, before * 0.5)
+
+    def test_a_take_known_to_be_on_tempo_is_not_drift_corrected(self):
+        """Where the search would read drift into the onsets but the bar
+        grid says the take is on tempo, the grid wins."""
+        ctx = context()
+        grid = ctx.target_grid(16)
+        rng = np.random.default_rng(11)
+        sl = np.sort(rng.choice(np.arange(4, grid.size - 20), 120, replace=False))
+        times = np.sort(grid[sl] * 1.005 + rng.normal(0, 0.014, sl.size))
+        y = click_train(times, duration=float(times[-1]) + 2.0)
+
+        _, searched = aligner.align_to_grid(y[:, None], SR, times, ctx,
+                                            strength=0.85)
+        self.assertEqual(searched["drift_source"], "onset_search")
+        self.assertTrue(searched["drift_corrected"])
+
+        _, rep = aligner.align_to_grid(y[:, None], SR, times, ctx,
+                                       strength=0.85, drift_ratio=1.0)
+        self.assertEqual(rep["drift_source"], "vocal_grid")
+        self.assertFalse(rep["drift_corrected"])
+        self.assertEqual(rep["drift_slope"], 0.0)
+
 
 class TestDtwPath(unittest.TestCase):
 

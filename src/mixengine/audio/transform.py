@@ -283,10 +283,33 @@ def grid_tempo_ratio(vocal_ones: Optional[np.ndarray], beat_bar_s: float
 # vocal's own grid is not trusted for placement and the phrase-start
 # scoring decides instead.
 VOCAL_GRID_CONFIDENCE = 0.6
+VOCAL_GRID_TEMPO_WINDOW = 0.08     # how far a take may run from the beat's tempo
+
+
+def _tempo_window(bar_s: float, beats_per_bar: int
+                  ) -> Optional[Tuple[float, float]]:
+    """The tracker's tempo range for counting `beats_per_bar` to a bar.
+
+    Free-running, the tracker keeps whichever pulse is strongest, and on
+    a rap take with nothing under it that is often the half-time feel:
+    it counted a 150 BPM take at 75 and reported a bar twice the beat's,
+    so the grid was thrown away and the take was never stretched. The
+    beat's bar is known, so the tempo is too, to within how far a
+    performer drifts. None when that tempo is outside what the
+    activations can resolve.
+    """
+    if bar_s <= 0 or beats_per_bar <= 0:
+        return None
+    bpm = 60.0 * beats_per_bar / bar_s
+    lo, hi = bpm * (1 - VOCAL_GRID_TEMPO_WINDOW), bpm * (1 + VOCAL_GRID_TEMPO_WINDOW)
+    if lo < 40.0 or hi > 300.0:
+        return None
+    return lo, hi
 
 
 def vocal_downbeats(vocal: np.ndarray, sr: int, bar_s: float,
-                    max_seconds: float = 150.0) -> Optional[np.ndarray]:
+                    max_seconds: float = 150.0,
+                    beats_per_bar: int = 4) -> Optional[np.ndarray]:
     """The vocal's own bar-ones, from a downbeat tracker run on it alone.
 
     A rapper's bar structure is audible without the drums -- couplets,
@@ -298,9 +321,10 @@ def vocal_downbeats(vocal: np.ndarray, sr: int, bar_s: float,
     peaks at chance, but each carries its own grid, and two grids can be
     laid over one another.
 
-    The tracker is asked for several bar lengths and the answer whose
-    bar matches the beat's is kept: a 200 BPM reading of a 100 BPM take
-    is the same music counted twice as fast.
+    The tracker is told the beat's tempo, within a drift window, and is
+    asked to count the beat's meter and its double: a 200 BPM reading of
+    a 100 BPM take is the same music counted twice as fast. The answer
+    whose bar matches the beat's is kept.
     """
     if not CAPS.madmom or bar_s <= 0:
         return None
@@ -323,10 +347,14 @@ def vocal_downbeats(vocal: np.ndarray, sr: int, bar_s: float,
         warnings.simplefilter("ignore")
         activations = RNNDownBeatProcessor()(mono)
         best, best_err = None, np.inf
-        for bpb in ([4], [8], [3], [6]):
+        for bpb in ([beats_per_bar], [2 * beats_per_bar]):
+            window = _tempo_window(bar_s, bpb[0])
+            if window is None:
+                continue
             try:
-                out = DBNDownBeatTrackingProcessor(beats_per_bar=bpb,
-                                                   fps=100)(activations)
+                out = DBNDownBeatTrackingProcessor(
+                    beats_per_bar=bpb, fps=100, min_bpm=window[0],
+                    max_bpm=window[1])(activations)
             except Exception:                            # noqa: BLE001
                 continue
             ones = out[out[:, 1] == 1][:, 0]
@@ -491,6 +519,78 @@ def align_to_downbeat(vocal: np.ndarray, sr: int,
                  "method": method})
     log.info("  aligned first phrase to %s at %.3fs (moved %+.3fs)",
              method, target, offset_s)
+    return v.astype(np.float32), info
+
+
+MAX_LEAD_IN_BARS = 8
+
+
+def place_at_section(vocal: np.ndarray, sr: int,
+                     phrases_samples: Sequence[Tuple[int, int]],
+                     downbeats_s: np.ndarray,
+                     sections: Optional[List[dict]]
+                     ) -> Tuple[np.ndarray, dict]:
+    """Move the vocal, by whole bars, to where the beat arrives.
+
+    Grid alignment settles which bar *line* the vocal sits on, not which
+    bar. Left there, a take begins at the top of the beat -- inside its
+    intro -- and the drop lands a few bars into the first verse. A
+    producer starts the vocal where the beat opens up: the first section
+    after the intro (or a break) that carries the track's energy. That
+    entry is snapped to a tracked downbeat and the vocal's own first
+    bar-one is moved onto it, a whole number of bars, so the bar phase
+    the alignment found is kept exactly.
+
+    An opening longer than MAX_LEAD_IN_BARS is left as placed: a long
+    instrumental intro is an arrangement decision for the listener, not
+    half a minute of silence for the engine to impose.
+    """
+    v = dsp.as_2d(vocal)
+    info: Dict[str, Any] = {"method": "none", "moved_s": 0.0}
+    grid = np.asarray(downbeats_s, dtype=np.float64)
+    if not sections or grid.size < 2 or not len(phrases_samples):
+        return v, info
+    bar_s = float(np.median(np.diff(grid)))
+    entry = next((s for s in sorted(sections, key=lambda s: float(s["start"]))
+                  if s.get("label") not in ("intro", "break", "outro")), None)
+    if entry is None or bar_s <= 0:
+        return v, info
+
+    entry_s = float(entry["start"])
+    lead_in_bars = entry_s / bar_s
+    if lead_in_bars > MAX_LEAD_IN_BARS + 0.5:
+        info.update({"method": "kept", "entry_s": round(entry_s, 3),
+                     "reason": "the beat opens for %.0f bars before its %s; "
+                               "left where the grid put it"
+                               % (lead_in_bars, entry.get("label"))})
+        return v, info
+
+    target_s, _ = _nearest(grid, entry_s)
+    first_s = phrases_samples[0][0] / sr
+    current_s, _ = _nearest(grid, first_s)
+    move_s = target_s - current_s
+    if abs(move_s) < bar_s * 0.5:
+        info.update({"method": "section_entry", "section": entry.get("label"),
+                     "entry_s": round(entry_s, 3), "target_s": round(target_s, 3),
+                     "moved_bars": 0})
+        return v, info
+    if move_s < 0 and -move_s > first_s:
+        info.update({"method": "kept", "entry_s": round(entry_s, 3),
+                     "reason": "moving to the %s would cut into the first phrase"
+                               % entry.get("label")})
+        return v, info
+
+    n = int(round(move_s * sr))
+    if n > 0:
+        v = np.vstack([np.zeros((n, v.shape[1]), dtype=np.float32), v])
+    else:
+        v = v[-n:]
+    info.update({"method": "section_entry", "section": entry.get("label"),
+                 "entry_s": round(entry_s, 3), "target_s": round(target_s, 3),
+                 "moved_s": round(move_s, 4),
+                 "moved_bars": int(round(move_s / bar_s))})
+    log.info("  placed the vocal's first bar at the beat's %s (%.2fs; moved "
+             "%+d bars)", entry.get("label"), target_s, info["moved_bars"])
     return v.astype(np.float32), info
 
 

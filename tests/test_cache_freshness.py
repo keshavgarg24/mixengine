@@ -54,17 +54,34 @@ class TestImprovementOver(unittest.TestCase):
 class TestDocumentWrappers(unittest.TestCase):
 
     def test_beat_wrapper_respects_the_stems_request(self):
-        doc = {"status": "ok", "analysis_backends": BASIC}
+        doc = {"status": "ok", "analysis_backends": BASIC, "bar_anchor": {}}
         now = {**BASIC, "separation": "demucs"}
         self.assertIsNone(beat_dna.can_improve(doc, want_stems=False, now=now))
         self.assertTrue(beat_dna.can_improve(doc, want_stems=True, now=now))
 
+    def test_a_beat_whose_bar_lines_were_never_checked_is_analysed_again(self):
+        """Bar-ones are re-counted from the drop where the tracker slipped;
+        a document from before that check may carry bar lines a beat off."""
+        doc = {"status": "ok", "analysis_backends": BASIC}
+        self.assertIn("drops", beat_dna.can_improve(doc, want_stems=False, now=BASIC))
+
     def test_vocal_wrapper_reads_whether_the_take_needed_separation(self):
         now = {**BASIC, "separation": "demucs"}
-        clean = {"status": "ok", "needs_separation": False, "analysis_backends": BASIC}
-        mixture = {"status": "ok", "needs_separation": True, "analysis_backends": BASIC}
+        clean = {"status": "ok", "needs_separation": False, "analysis_backends": BASIC,
+                 "conditioned_path": __file__}
+        mixture = {"status": "ok", "needs_separation": True, "analysis_backends": BASIC,
+                   "conditioned_path": __file__}
         self.assertIsNone(vocal_dna.can_improve(clean, now=now))
         self.assertTrue(vocal_dna.can_improve(mixture, now=now))
+
+    def test_a_vocal_whose_restored_take_is_gone_is_analysed_again(self):
+        """The render reads the restored take from the cached path; an
+        analysis made before one was written, or whose file was cleaned
+        up, would render the noisy original."""
+        doc = {"status": "ok", "needs_separation": False, "analysis_backends": BASIC}
+        self.assertIn("restored take", vocal_dna.can_improve(doc))
+        doc["conditioned_path"] = os.path.join(os.path.dirname(__file__), "missing.wav")
+        self.assertIn("restored take", vocal_dna.can_improve(doc))
 
     def test_failed_documents_are_not_the_cache_layer_s_problem(self):
         self.assertIsNone(beat_dna.can_improve({"status": "failed"}, want_stems=True))

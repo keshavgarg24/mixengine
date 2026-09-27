@@ -56,6 +56,7 @@ class RhythmResult:
     grid_stability: float = 0.0
     alternates: List[float] = field(default_factory=list)
     method: str = "none"
+    bar_anchor: dict = field(default_factory=dict)
 
     @property
     def bar_duration_s(self) -> float:
@@ -75,6 +76,7 @@ class RhythmResult:
             "grid_stability": round(float(self.grid_stability), 3),
             "alternates": [round(float(a), 2) for a in self.alternates],
             "method": self.method,
+            "bar_anchor": self.bar_anchor,
         }
 
 
@@ -112,6 +114,8 @@ def analyze_rhythm(y: np.ndarray, sr: int,
     res.grid_stability = _grid_stability(res.beats)
     if len(res.downbeats) == 0 and len(res.beats) > 0:
         res.downbeats = _infer_downbeats(mono, sr, res.beats, res.beats_per_bar)
+    res.downbeats, res.bar_anchor = _anchor_bars_to_drops(
+        mono, sr, res.beats, res.downbeats, res.beats_per_bar)
     return res
 
 
@@ -234,6 +238,82 @@ def _infer_downbeats(mono: np.ndarray, sr: int, beats: np.ndarray,
         if score > best_score:
             best_phase, best_score = phase, score
     return beats[np.arange(best_phase, len(beats), bpb)]
+
+
+BAR_SLIP_TOLERANCE = 0.10   # a beat interval this far off the median is drift
+BAR_SLIP_MIN_BEATS = 0.5    # a run of drift that adds up to this has lost count
+DROP_JUMP_DB = 10.0         # a drop arrives suddenly...
+DROP_SUSTAIN_DB = 6.0       # ...and the bar after it stays that loud
+
+
+def _anchor_bars_to_drops(mono: np.ndarray, sr: int, beats: np.ndarray,
+                          downbeats: np.ndarray, bpb: int
+                          ) -> Tuple[np.ndarray, dict]:
+    """Re-count bar-ones from the drop wherever the tracker lost count.
+
+    madmom's beat times are reliable wherever there are drums. Through a
+    drum-less intro the DBN drifts: on a 150 BPM trap beat it stretched
+    eight beats into seven, so every bar-one after the drop sat on beat
+    two and a vocal laid on that grid started a beat late. The RNN's
+    downbeat activation was near zero throughout, so nothing inside the
+    tracker could catch it.
+
+    A drop is the strongest evidence of a bar line a produced beat has:
+    the full mix arrives on the one. So wherever a run of stretched or
+    compressed intervals adds up to a slipped beat, the first sudden,
+    sustained arrival after it becomes bar one and the bars from there
+    are counted in tracked beats. A steady tracker is trusted as it is:
+    a pickup hit one beat before a correct bar line must move nothing.
+    """
+    beats = np.asarray(beats, dtype=np.float64)
+    out = np.asarray(downbeats, dtype=np.float64)
+    info: dict = {"slips": 0, "anchored": []}
+    if bpb < 1 or beats.size < 4 * bpb or out.size < 2:
+        return out, info
+    m = np.ravel(mono)
+    iv = np.diff(beats)
+    step = float(np.median(iv))
+    bar = step * bpb
+    loose = np.abs(iv - step) > BAR_SLIP_TOLERANCE * step
+
+    def level(a: float, b: float) -> float:
+        seg = m[max(0, int(a * sr)):max(0, int(b * sr))]
+        if seg.size == 0:
+            return -120.0
+        return 20.0 * float(np.log10(np.sqrt(np.mean(seg ** 2)) + 1e-9))
+
+    k = 0
+    while k < iv.size:
+        if not loose[k]:
+            k += 1
+            continue
+        k0 = k
+        while k < iv.size and loose[k]:
+            k += 1
+        slipped = float(np.sum(iv[k0:k] - step)) / step
+        if abs(slipped) < BAR_SLIP_MIN_BEATS:
+            continue
+        info["slips"] += 1
+        best: Optional[Tuple[float, int]] = None
+        for i in range(max(0, k - bpb), min(beats.size, k + 2 * bpb + 1)):
+            t = beats[i]
+            if t < bar or (t + bar) * sr > m.size:
+                continue
+            jump = level(t, t + 0.15) - level(t - 0.15, t)
+            sustain = level(t, t + bar) - level(t - bar, t)
+            if (jump >= DROP_JUMP_DB and sustain >= DROP_SUSTAIN_DB
+                    and (best is None or jump > best[0])):
+                best = (jump, i)
+        if best is None:
+            continue
+        t = float(beats[best[1]])
+        if float(np.min(np.abs(out - t))) < 0.5 * step:
+            continue
+        out = np.concatenate([out[out < t - 0.5 * step], beats[best[1]::bpb]])
+        info["anchored"].append(round(t, 3))
+        log.info("rhythm: tracker slipped %+.2f beats before %.2fs; counting "
+                 "bars from the drop there", slipped, t)
+    return out, info
 
 
 def snap_to_grid(t: float, grid: np.ndarray) -> Tuple[float, float]:

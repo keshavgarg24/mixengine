@@ -86,6 +86,7 @@ class AlignReport:
     drift_slope: float = 0.0
     drift_corrected: bool = False
     drift_removed_ms: float = 0.0
+    drift_source: str = ""
     warp: Dict = field(default_factory=dict)
     note: str = ""
 
@@ -102,6 +103,7 @@ def align_to_grid(y: np.ndarray, sr: int, onsets_s: FloatSeq,
                   subdivision: int = 16,
                   max_move_s: float = 0.08,
                   correct_drift: bool = True,
+                  drift_ratio: Optional[float] = None,
                   phrases: Optional[Sequence[Phrase]] = None
                   ) -> Tuple[np.ndarray, dict]:
     """Variable-rate alignment of a vocal onto a beat's groove grid.
@@ -109,6 +111,11 @@ def align_to_grid(y: np.ndarray, sr: int, onsets_s: FloatSeq,
     `context` is a `timing.TimingContext`: it carries the beat's measured
     downbeats and its groove template, so the target is the track's own
     pocket rather than a mathematically exact grid.
+
+    `drift_ratio`, when given, is the take's tempo relative to the beat's
+    (vocal bar / beat bar; > 1 = slower), measured upstream from the
+    take's own bar-ones. It replaces the onset-based tempo search, whose
+    noise floor on dense material is wider than the drift it looks for.
 
     Returns `(audio, report)`. On any condition that makes alignment
     meaningless -- too few onsets, no grid, zero strength -- the audio is
@@ -151,18 +158,28 @@ def align_to_grid(y: np.ndarray, sr: int, onsets_s: FloatSeq,
     o_work = o
     drift = np.zeros_like(o)
     if correct_drift:
-        ratio, fit, gain = dtw.estimate_tempo_ratio(o, grid)
+        if drift_ratio is not None:
+            # The take's bar grid has already measured its tempo; a search
+            # over these onsets would only rediscover it, plus noise.
+            ratio = float(drift_ratio)
+            fit = dtw.grid_fit_error(t0 + (o - t0) / ratio, grid)
+            gain = 1.0
+            rep.drift_source = "vocal_grid"
+        else:
+            ratio, fit, gain = dtw.estimate_tempo_ratio(o, grid)
+            rep.drift_source = "onset_search"
         rep.drift_slope = float(ratio - 1.0)
         if abs(ratio - 1.0) >= MIN_DRIFT_SLOPE and gain >= MIN_DRIFT_GAIN:
             o_work = t0 + (o - t0) / ratio
             drift = o_work - o
             rep.drift_corrected = True
             rep.drift_removed_ms = float(abs(drift[-1] - drift[0]) * 1000)
-            log.info("  align: take runs %.2f%% %s the beat; removing %.0f ms "
-                     "of drift (grid fit %.0f -> %.0f ms)",
+            log.info("  align: take runs %.2f%% %s the beat (%s); removing "
+                     "%.0f ms of drift (grid fit %.0f -> %.0f ms)",
                      abs(ratio - 1.0) * 100,
-                     "faster than" if ratio > 1 else "slower than",
-                     rep.drift_removed_ms, rep.error_before_ms, fit * 1000)
+                     "slower than" if ratio > 1 else "faster than",
+                     rep.drift_source, rep.drift_removed_ms,
+                     rep.error_before_ms, fit * 1000)
 
     # ── 2. Correspondence ────────────────────────────────────────────────
     assign = dtw.assign_onsets_to_grid(

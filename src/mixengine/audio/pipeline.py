@@ -183,11 +183,15 @@ def render_variant(vocal_audio: np.ndarray, sr: int, vdna: dict,
     # 100 BPM take as 99.4 and the resulting stretch sped it up 0.6%,
     # manufacturing 641 ms of drift for a later stage to chase.
     vocal_ones = None
+    grid_drift = None   # the take's tempo vs the beat's, for the fine aligner
     beat_bar_s = (float(np.median(np.diff(downbeats_s)))
                   if len(downbeats_s) >= 2 else 0.0)
+    beats_per_bar = (int(round(beat_bar_s / float(np.median(np.diff(beats_s)))))
+                     if beat_bar_s > 0 and len(beats_s) >= 2 else 4)
     if beat_bar_s > 0 and (render_plan is None
                            or render_plan.alignment.method != "single_offset"):
-        ones = transform.vocal_downbeats(v, sr, beat_bar_s)
+        ones = transform.vocal_downbeats(v, sr, beat_bar_s,
+                                         beats_per_bar=max(1, beats_per_bar))
         grid_ratio = (transform.grid_tempo_ratio(ones, beat_bar_s)
                       if ones is not None else None)
         if ones is not None and grid_ratio is not None:
@@ -206,6 +210,7 @@ def render_variant(vocal_audio: np.ndarray, sr: int, vdna: dict,
             # The grid is measured on the unstretched take; scale it to
             # where the bar-ones will land after the stretch.
             vocal_ones = ones if measured == 1.0 else ones * (1.0 / measured)
+            grid_drift = grid_ratio
         else:
             vocal_ones = ones
 
@@ -239,6 +244,8 @@ def render_variant(vocal_audio: np.ndarray, sr: int, vdna: dict,
         tinfo["time_stretch"] = {"ratio": round(1.0 / ratio, 4),
                                  "method": "tempo_ratio",
                                  "interpretation": match.tempo_interpretation}
+        if grid_drift is not None:
+            grid_drift = 1.0        # the stretch put the take on tempo
     else:
         tinfo["time_stretch"] = {"ratio": 1.0, "method": "none"}
 
@@ -270,6 +277,17 @@ def render_variant(vocal_audio: np.ndarray, sr: int, vdna: dict,
     else:
         v, align_info = transform.align_to_downbeat(
             v, sr, phrases, downbeats_s, beats_s, vocal_ones=vocal_ones)
+        # ── 3c. Structural placement ──────────────────────────────────────
+        # The alignment above settles the bar phase; this settles the bar.
+        # A take left at the top of the beat sits inside its intro and the
+        # drop arrives mid-verse, so the vocal is moved, whole bars only,
+        # to the first section that carries the beat's energy.
+        v, place_info = transform.place_at_section(
+            v, sr, analysis.detect_phrases(v, sr), downbeats_s,
+            bdna.get("sections"))
+        if place_info.get("method") != "none":
+            align_info = dict(align_info)
+            align_info["placement"] = place_info
 
     # A nudge the user asked for, in beats of this beat's own tempo.
     # Where a vocal's bars sit against a beat it was never recorded to is
@@ -366,7 +384,7 @@ def render_variant(vocal_audio: np.ndarray, sr: int, vdna: dict,
         # per-onset quantiser then runs as before.
         v, a_report = align.align_to_grid(
             v, sr, onsets, time_ctx, strength=q_strength, subdivision=16,
-            phrases=time_ctx.phrases)
+            phrases=time_ctx.phrases, drift_ratio=grid_drift)
         tinfo["align"] = a_report
         aligned = bool(a_report.get("enabled"))
         if not aligned:

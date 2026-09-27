@@ -87,6 +87,7 @@ def extract(path: str,
     kind = separation.classify_vocal_input(y, sr)
     log.info("  input type: %s (%s)", kind.kind, kind.reason)
 
+    separated = False
     if kind.needs_separation and do_separation and separation.CAPS.can_separate:
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
@@ -94,6 +95,7 @@ def extract(path: str,
             vpath = stems.get("vocals")
             if vpath and os.path.exists(vpath):
                 y, sr, _ = audio_io.load(vpath, sr=SR)
+                separated = True
                 log.info("  separated vocals from input")
             else:
                 log.warning("  separation produced no vocal stem; using input as-is")
@@ -103,8 +105,14 @@ def extract(path: str,
 
     # ── Stage 2: restoration ──────────────────────────────────────────────
     quality_post = audio_io.probe_quality(y, sr, path)
-    y, restore_report = separation.condition_vocal(y, sr, quality_post)
+    y, restore_report = separation.condition_vocal(y, sr, quality_post,
+                                                   separated=separated)
     log.info("  restoration: %s", {k: v for k, v in restore_report.items() if v})
+    # The mixer's expander opens above this floor. It must be the floor of
+    # the take the mixer receives -- the restored one -- not the input's:
+    # a threshold set 6 dB over a noise floor that restoration has since
+    # lowered by 12 sits inside the quiet syllables and chews them.
+    noise_floor_db = float(dsp.noise_floor_db(y, sr))
 
     if conditioned_out:
         audio_io.save(conditioned_out, y, sr)
@@ -272,7 +280,7 @@ def extract(path: str,
                                    if len(phrase_levels) > 1 else 0.0),
         "sibilance_ratio": round(float(sibilance), 4),
         "resonances": [[round(f, 1), round(e, 2)] for f, e in resonances],
-        "noise_floor_db": round(float(quality_post.noise_floor_db), 2),
+        "noise_floor_db": round(noise_floor_db, 2),
         "quality": quality_post.to_dict(),
         "warnings": list(quality_post.warnings) + extra_warnings,
     }
@@ -441,6 +449,11 @@ def can_improve(doc: Optional[dict],
     """
     if not doc or doc.get("status") != "ok":
         return None
+    # The render reads the restored take from this path. An analysis made
+    # before it was written renders the noisy original.
+    cond = doc.get("conditioned_path")
+    if not cond or not os.path.exists(cond):
+        return "restored take is not on disk"
     return improvement_over(doc.get("analysis_backends"),
                             want_separation=bool(doc.get("needs_separation")),
                             now=now)

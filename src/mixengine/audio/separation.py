@@ -356,12 +356,38 @@ def dereverb(y: np.ndarray, sr: int, strength: float = 0.5) -> np.ndarray:
     return out.astype(np.float32)
 
 
-def condition_vocal(y: np.ndarray, sr: int, quality) -> Tuple[np.ndarray, dict]:
+SEPARATOR_DENOISE_SNR_DB = 15.0
+
+
+def _separator_denoise(y: np.ndarray, sr: int) -> Optional[np.ndarray]:
+    """The stem separator's vocal stem, used as a denoiser.
+
+    Spectral subtraction tops out around 11 dB and buys it with musical
+    noise; on a take whose fan noise sat 6 dB under the voice it left the
+    noise audible and the mixer's make-up gain then lifted it. The
+    separator was trained to keep a voice and discard everything that is
+    not one, and measured on that take it dropped the floor 12 dB while
+    leaving a clean take untouched to 0.03 dB. None if no stem came back.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, "vocal.wav")
+        audio_io.save(src, y, sr)
+        vpath = separate(src, tmp, want="vocals").get("vocals")
+        if not vpath or not os.path.exists(vpath):
+            return None
+        out, _, _ = audio_io.load(vpath, sr=sr)
+    out = dsp.as_2d(out)[:len(y)]
+    return dsp.pad_to(out, len(y)).astype(np.float32)
+
+
+def condition_vocal(y: np.ndarray, sr: int, quality,
+                    separated: bool = False) -> Tuple[np.ndarray, dict]:
     """Full restoration chain, applied only where measurement says it's needed.
 
     Returns `(audio, report)`. Every step is conditional: a clean studio
     take passes through almost untouched, while a noisy phone recording in
-    a live room gets the full treatment.
+    a live room gets the full treatment. `separated` says the take already
+    came out of the separator, which is then not run a second time.
     """
     report: Dict[str, Any] = {"denoise": False, "dereverb": False, "highpass": False}
     out = dsp.as_2d(y)
@@ -369,6 +395,20 @@ def condition_vocal(y: np.ndarray, sr: int, quality) -> Tuple[np.ndarray, dict]:
     # Rumble below 55 Hz is never useful on a vocal.
     out = dsp.highpass(out, sr, 55.0, order=2)
     report["highpass"] = True
+
+    # Noise the voice barely clears is beyond subtraction. Let the
+    # separator take it out, then measure again so the rest of the chain
+    # works on what is left rather than on the input's numbers.
+    if quality.snr_db < SEPARATOR_DENOISE_SNR_DB and not separated \
+            and CAPS.can_separate:
+        cleaned = _separator_denoise(out, sr)
+        if cleaned is not None:
+            out = cleaned
+            quality = audio_io.probe_quality(out, sr)
+            report["separator_denoise"] = True
+            report["snr_after_separator_db"] = round(float(quality.snr_db), 1)
+            log.info("  separator took the noise floor to %.1f dB (snr %.1f dB)",
+                     quality.noise_floor_db, quality.snr_db)
 
     if quality.snr_db < 26.0:
         strength = float(np.clip((26.0 - quality.snr_db) / 22.0, 0.2, 0.85))
