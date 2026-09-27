@@ -1113,6 +1113,121 @@ NOISE_VERDICTS = (("clean", 30.0), ("light", 20.0), ("heavy", 14.0),
                   ("severe", -np.inf))
 
 
+# ── Gain staging ─────────────────────────────────────────────────────────────
+# The level every take is brought to before anything measures or mixes it:
+# the RMS over its phrases. A phone take at -74 dBFS measured as no loudness
+# at all, the balance stage applied no gain because it had nothing to
+# compare, and the voice went out 70 dB under the beat with the job marked a
+# success. Every threshold downstream -- the expander's, the compressor's --
+# assumes a take at a working level, so it is set here, once, and said.
+STAGE_TARGET_DB = -20.0
+STAGE_CEILING_DB = -1.0       # the peak is never pushed past this
+STAGE_DEADBAND_DB = 3.0       # closer than this is left alone
+STAGE_MAX_GAIN_DB = 60.0
+
+
+def stage_level(y: np.ndarray, sr: int,
+                phrases: Optional[List[Tuple[int, int]]] = None
+                ) -> Tuple[np.ndarray, float]:
+    """Bring the take's phrase-level RMS to the working level.
+
+    Returns the take and the gain applied in dB (0.0 when it was left
+    alone). Measured over phrases so a take that is mostly silence is
+    judged by its words, not its gaps.
+    """
+    y2 = dsp.as_2d(y)
+    if len(y2) == 0:
+        return y, 0.0
+    if phrases is None:
+        phrases = detect_phrases(y2, sr)
+    mono = dsp.to_mono(y2)
+    parts = [mono[s:e] for s, e in phrases if e > s] if phrases else []
+    active = np.concatenate(parts) if parts else mono
+    if active.size == 0 or not np.any(active):
+        return y, 0.0
+    level, peak = dsp.rms_db(active), dsp.peak_db(y2)
+    if not (np.isfinite(level) and np.isfinite(peak)):
+        return y, 0.0
+    gain = min(STAGE_TARGET_DB - level, STAGE_CEILING_DB - peak)
+    gain = float(np.clip(gain, -STAGE_MAX_GAIN_DB, STAGE_MAX_GAIN_DB))
+    if abs(gain) < STAGE_DEADBAND_DB:
+        return y, 0.0
+    return (y2 * dsp.db_to_lin(gain)).astype(np.float32), round(gain, 1)
+
+
+# ── Is there a voice at all ─────────────────────────────────────────────────
+# A beat uploaded in the vocal slot, a full song, a test tone: each went
+# through as "the vocal", was tuned and placed and mixed over the beat, and
+# came back scored in the nineties. Level and pitch cannot tell a voice from
+# an instrument; a voice-activity model can. Silero's is two megabytes and
+# runs a minute of audio in about a second on a CPU.
+# Below this share of phrase frames called speech, there is no voice. Every
+# instrumental, tone and noise file measured exactly 0.0; every real take,
+# including one at -74 dBFS and one under severe room noise, measured 0.4
+# or more. The bar sits near the floor so unusual singing is never blocked
+# on the model's uncertainty -- "accept" is the way past if it ever is.
+VOICE_MIN_FRACTION = 0.05
+_VAD_MODEL = None
+
+
+def _vad_model():
+    global _VAD_MODEL
+    if _VAD_MODEL is None:
+        from silero_vad import load_silero_vad
+        _VAD_MODEL = load_silero_vad()
+    return _VAD_MODEL
+
+
+def voice_presence(y: np.ndarray, sr: int,
+                   phrases: Optional[List[Tuple[int, int]]] = None
+                   ) -> Optional[dict]:
+    """How much of the take's sound the voice model hears as a voice.
+
+    Returns None when the model is not installed or fails -- the check is
+    then simply not made, and no question is asked. `speech_in_phrases`
+    is the share of the take's own phrases (where it is loud enough to
+    be performing) that the model calls speech; below VOICE_MIN_FRACTION
+    the verdict is "no_voice".
+    """
+    if not CAPS.silero_vad:
+        return None
+    try:
+        import librosa
+        import torch
+        model = _vad_model()
+        model.reset_states()
+        mono = dsp.to_mono(y).astype(np.float32)
+        mono16 = (librosa.resample(mono, orig_sr=sr, target_sr=16000)
+                  if sr != 16000 else mono)
+        win = 512
+        n = (len(mono16) // win) * win
+        if n < win:
+            return None
+        probs = np.empty(n // win, dtype=np.float32)
+        with torch.no_grad():
+            for i in range(0, n, win):
+                probs[i // win] = float(
+                    model(torch.from_numpy(mono16[i:i + win]), 16000).item())
+        speech = probs > 0.5
+        out = {"speech_fraction": round(float(speech.mean()), 3),
+               "speech_s": round(float(speech.sum()) * win / 16000.0, 2)}
+        if phrases is None:
+            phrases = detect_phrases(y, sr)
+        mask = np.zeros(probs.size, dtype=bool)
+        for s, e in phrases or []:
+            a = int(s / sr * 16000 / win)
+            b = int(np.ceil(e / sr * 16000 / win))
+            mask[max(0, a):max(0, b)] = True
+        in_phrases = float(speech[mask].mean()) if mask.any() else 0.0
+        out["speech_in_phrases"] = round(in_phrases, 3)
+        out["verdict"] = ("voice" if in_phrases >= VOICE_MIN_FRACTION
+                          else "no_voice")
+        return out
+    except Exception as e:
+        log.warning("voice presence unavailable (%s)", e)
+        return None
+
+
 def noise_verdict(y: np.ndarray, sr: int,
                   phrases: List[Tuple[int, int]]) -> dict:
     """How far the voice clears what is under it, and a word for it.

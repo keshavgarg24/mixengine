@@ -306,12 +306,20 @@ def declip(y: np.ndarray, threshold: float = 0.9995) -> np.ndarray:
                 continue
             xs = np.array([a - 1, a, b, b + 1])
             ys = ch[xs]
+            # Fit on indices counted from the run, not from the start of
+            # the file: a cubic in sample numbers in the millions is
+            # ill-conditioned and numpy warned about it on every run.
             try:
-                poly = np.polyfit(xs, ys, 3)
-                ch[run] = np.polyval(poly, run)
+                poly = np.polyfit(xs - a, ys, 3)
+                ch[run] = np.polyval(poly, run - a)
             except Exception:
                 continue
-        y2[:, c] = np.clip(ch, -1.0, 1.0)
+        # The arc rises past full scale -- that is the point of it. Clipping
+        # it back to 1.0 flattened every repaired top again and made this a
+        # no-op on exactly the takes it was for. Make room instead: the
+        # take gets quieter, and gain staging brings it back to level.
+        peak = float(np.max(np.abs(ch))) if ch.size else 0.0
+        y2[:, c] = ch / peak if peak > 1.0 else ch
     return y2
 
 

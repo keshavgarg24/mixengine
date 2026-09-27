@@ -356,7 +356,7 @@ class TestIntentAnswers(unittest.TestCase):
         self.assertFalse(i.is_all_auto)
         for bad in ({"performance": "opera"}, {"lead_in": "maybe"},
                     {"entry": "middle"}, {"noise": "ignore"},
-                    {"length": "maybe"}):
+                    {"length": "maybe"}, {"voice": "sure"}):
             with self.assertRaises(ValueError):
                 Intents.from_dict(bad)
 
@@ -364,11 +364,72 @@ class TestIntentAnswers(unittest.TestCase):
         """A client that posts the question's own default must not get a
         422: every option value the engine offers has to parse."""
         vdna = {"duration_s": 1.5,
+                "voice": {"verdict": "no_voice", "speech_in_phrases": 0.0},
                 "noise": {"verdict": "severe", "snr_db": 10.0,
                           "input_snr_db": 6.0}}
         for q in questions.questions_for(vdna):
             for option in q.options:
                 Intents.from_dict({q.intent: option["value"]})
+
+
+class TestVoiceQuestion(unittest.TestCase):
+
+    NO_VOICE = {"duration_s": 30.0, "voice": {"verdict": "no_voice",
+                                              "speech_in_phrases": 0.02},
+                "noise": {"verdict": "clean", "snr_db": 40.0},
+                "performance_type": "rap", "performance_confidence": 0.9}
+
+    def test_a_file_with_no_voice_blocks_and_says_so(self):
+        qs = questions.questions_for(self.NO_VOICE)
+        self.assertEqual([q.id for q in qs], ["voice"])
+        q = qs[0]
+        self.assertEqual((q.severity, q.default, q.intent),
+                         ("block", "rerecord", "voice"))
+        self.assertIn("2%", q.reason)
+        self.assertEqual(questions.unanswered_blocks(qs, Intents.AUTO), [q])
+        self.assertEqual(questions.unanswered_blocks(
+            qs, Intents.from_dict({"voice": "accept"})), [])
+
+    def test_a_take_with_a_voice_or_no_check_is_not_asked(self):
+        for voice in ({"verdict": "voice", "speech_in_phrases": 0.8}, None):
+            vdna = dict(self.NO_VOICE, voice=voice)
+            self.assertNotIn("voice", [q.id for q in
+                                       questions.questions_for(vdna)])
+
+
+class TestStageLevel(unittest.TestCase):
+    """Every take reaches the same working level before it is measured."""
+
+    def test_a_very_quiet_take_is_raised_and_the_gain_is_said(self):
+        y = tone(4.0, amp=0.3) * 0.001                    # about -74 dBFS
+        out, gain = analysis.stage_level(y, SR)
+        self.assertGreater(gain, 40.0)
+        self.assertAlmostEqual(float(dsp.rms_db(out)), analysis.STAGE_TARGET_DB,
+                               delta=1.5)
+
+    def test_a_hot_take_is_lowered(self):
+        out, gain = analysis.stage_level(tone(4.0, amp=0.95), SR)
+        self.assertLess(gain, -3.0)
+        self.assertLessEqual(float(dsp.peak_db(out)), analysis.STAGE_CEILING_DB + 0.01)
+
+    def test_the_peak_never_passes_the_ceiling(self):
+        """A quiet take with one spike at -6 dBFS: the words want +40 dB,
+        the spike allows +5. The spike wins."""
+        y = tone(4.0, amp=0.3) * 0.02
+        y[SR] = 0.5
+        out, gain = analysis.stage_level(y, SR)
+        self.assertAlmostEqual(gain, 5.0, delta=0.15)
+        self.assertLessEqual(float(dsp.peak_db(out)), analysis.STAGE_CEILING_DB + 0.01)
+
+    def test_a_take_near_the_level_is_left_alone(self):
+        amp = 10 ** (analysis.STAGE_TARGET_DB / 20) * np.sqrt(2)
+        out, gain = analysis.stage_level(tone(4.0, amp=amp), SR)
+        self.assertEqual(gain, 0.0)
+        self.assertIs(out, out)
+
+    def test_silence_is_left_alone(self):
+        out, gain = analysis.stage_level(np.zeros(SR * 2, np.float32), SR)
+        self.assertEqual(gain, 0.0)
 
 
 class TestRenderGate(unittest.TestCase):

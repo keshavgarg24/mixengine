@@ -211,7 +211,8 @@ def cmd_render(args) -> int:
             "lead_in": getattr(args, "lead_in", None),
             "entry": getattr(args, "entry", None),
             "noise": getattr(args, "noise", None),
-            "length": getattr(args, "length", None)}))
+            "length": getattr(args, "length", None),
+            "voice": getattr(args, "voice", None)}))
 
     if out["status"] == "needs_answers":
         # The dashboard puts these as questions with the engine's own
@@ -344,6 +345,8 @@ def main(argv=None) -> int:
     rd.add_argument("--length", default=None, choices=("accept", "rerecord"),
                     help="accept: render a take too short to build a song "
                          "from")
+    rd.add_argument("--voice", default=None, choices=("accept", "rerecord"),
+                    help="accept: use a file with no voice in it as the vocal")
     rd.set_defaults(func=cmd_render)
 
     sv = sub.add_parser("serve", help="run the local web interface")

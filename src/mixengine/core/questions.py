@@ -84,6 +84,31 @@ def _length_question(vdna: dict) -> Optional[Question]:
         detail={"duration_s": round(duration, 2)})
 
 
+def _voice_question(vdna: dict) -> Optional[Question]:
+    """A file with no voice in it.
+
+    A beat in the vocal slot, a whole song, a test tone: level and pitch
+    cannot tell them from a take, so each was tuned, placed and mixed over
+    the beat and scored in the nineties. The voice model can tell.
+    """
+    voice = vdna.get("voice") or {}
+    if voice.get("verdict") != "no_voice":
+        return None
+    share = float(voice.get("speech_in_phrases") or 0.0) * 100
+    return Question(
+        id="voice", severity="block", intent="voice",
+        text=("No voice was found in this file. It sounds like an "
+              "instrumental or a tone rather than a take, and the engine "
+              "would mix it over the beat as if it were the vocal. Upload "
+              "the take with the voice on it."),
+        options=[_opt("rerecord", "I'll upload the vocal take"),
+                 _opt("accept", "Use this as the vocal anyway")],
+        default="rerecord",
+        reason="the voice detector hears speech in %.0f%% of its phrases"
+               % share,
+        detail=voice)
+
+
 def _noise_question(vdna: dict) -> Optional[Question]:
     noise = vdna.get("noise") or {}
     verdict = noise.get("verdict")
@@ -241,7 +266,7 @@ def _entry_question(bdna: Optional[dict]) -> Optional[Question]:
 
 def questions_for(vdna: dict, bdna: Optional[dict] = None) -> List[Question]:
     """Everything the analysis could not settle, most serious first."""
-    out = [q for q in (_length_question(vdna),
+    out = [q for q in (_length_question(vdna), _voice_question(vdna),
                        _noise_question(vdna), _start_question(vdna),
                        _performance_question(vdna), _key_question(vdna),
                        _bpm_question(vdna), _entry_question(bdna)) if q]

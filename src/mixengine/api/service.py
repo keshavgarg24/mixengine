@@ -249,6 +249,7 @@ class EngineService:
     def analyze_vocal(self, audio_path: str, *, user_bpm: Optional[float] = None,
                       user_key: Optional[str] = None, force: bool = False,
                       recorded_over: Optional[str] = None,
+                      beat: Optional[dict] = None,
                       job: Optional[Job] = None) -> dict:
         """Analyse a take.
 
@@ -256,6 +257,12 @@ class EngineService:
         take was recorded. It feeds two stages that cannot work without it:
         bleed cancellation, which needs the reference signal to subtract,
         and tempo, which becomes the beat's tempo rather than an estimate.
+
+        `beat` is the analysed beat of the pair being rendered, when the
+        caller has one and nobody said it was playing. Bleed is still
+        looked for and cancelled -- a phone take over speakers carries
+        the beat -- but its tempo is taken as the take's only if bleed
+        proves the take was performed to it.
         """
         from ..analysis import vocal_dna
         from ..core import audio_io
@@ -264,6 +271,9 @@ class EngineService:
         if recorded_over:
             ref = next((b for b in self.catalog()
                         if b.get("beat_id") == recorded_over), None)
+        stated = ref is not None
+        if ref is None and beat and beat.get("status") == "ok":
+            ref = beat
 
         key = file_hash(audio_path)
         if user_bpm or user_key or ref:
@@ -288,7 +298,7 @@ class EngineService:
         dna = vocal_dna.extract(
             audio_path, user_bpm=user_bpm, user_key=user_key, do_separation=True,
             reference_beat_path=(ref or {}).get("source_path"),
-            reference_beat_dna=ref,
+            reference_beat_dna=ref, reference_stated=stated,
             conditioned_out=self.ws.path("vocals", "%s-conditioned.wav" % key))
         if recorded_over and ref is None:
             dna.setdefault("warnings", []).append(
@@ -325,7 +335,8 @@ class EngineService:
             vdna = self.analyze_vocal(vocal_path, user_bpm=user_bpm,
                                       user_key=user_key, job=j)
             if vdna.get("status") != "ok":
-                raise RuntimeError(vdna.get("error") or "vocal analysis failed")
+                raise RuntimeError("the vocal could not be used: %s"
+                                   % (vdna.get("error") or "analysis failed"))
             asked = _ask_before_render(vdna, None, intents)
 
             cat = self.catalog()
@@ -373,7 +384,8 @@ class EngineService:
                 "Listening to the beat"
             bdna = self.analyze_beat(beat_path, job=j)
             if bdna.get("status") != "ok":
-                raise RuntimeError(bdna.get("error") or "beat analysis failed")
+                raise RuntimeError("the beat could not be used: %s"
+                                   % (bdna.get("error") or "analysis failed"))
 
             j.stage, j.progress, j.message = "intake", 0.2, \
                 "Listening to the vocal"
@@ -382,7 +394,8 @@ class EngineService:
             vdna = self.analyze_vocal(vocal_path, user_bpm=user_bpm,
                                       user_key=user_key, job=j)
             if vdna.get("status") != "ok":
-                raise RuntimeError(vdna.get("error") or "vocal analysis failed")
+                raise RuntimeError("the vocal could not be used: %s"
+                                   % (vdna.get("error") or "analysis failed"))
             asked = _ask_before_render(vdna, bdna, intents)
 
             j.stage, j.progress, j.message = "transform", 0.4, \
@@ -423,7 +436,8 @@ class EngineService:
                 "Listening to the beat"
             bdna = self.analyze_beat(beat_path, job=j)
             if bdna.get("status") != "ok":
-                raise RuntimeError(bdna.get("error") or "beat analysis failed")
+                raise RuntimeError("the beat could not be used: %s"
+                                   % (bdna.get("error") or "analysis failed"))
 
             j.stage, j.progress, j.message = "intake", 0.4, \
                 "Listening to the vocal"
@@ -432,7 +446,8 @@ class EngineService:
             vdna = self.analyze_vocal(vocal_path, user_bpm=user_bpm,
                                       user_key=user_key, job=j)
             if vdna.get("status") != "ok":
-                raise RuntimeError(vdna.get("error") or "vocal analysis failed")
+                raise RuntimeError("the vocal could not be used: %s"
+                                   % (vdna.get("error") or "analysis failed"))
 
             j.stage, j.progress = "judge", 0.9
             asked = [q.to_dict() for q in questions.questions_for(vdna, bdna)]

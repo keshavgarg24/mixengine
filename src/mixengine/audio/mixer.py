@@ -362,6 +362,15 @@ def process_beat(stems: Dict[str, np.ndarray], beat_full: np.ndarray,
 # Balance and summing
 # ═════════════════════════════════════════════════════════════════════════════
 
+def _region_rms_db(x: np.ndarray, regions) -> float:
+    """RMS in dB over the given sample regions, or -inf for silence."""
+    x2 = dsp.as_2d(x)
+    parts = [x2[s:e] for s, e in regions if e > s]
+    if not parts:
+        return float("-inf")
+    return float(dsp.rms_db(np.vstack(parts)))
+
+
 def balance_and_sum(vocal: np.ndarray, beat: np.ndarray, sr: int,
                     phrases: Sequence[Tuple[int, int]],
                     profile: GenreProfile,
@@ -397,10 +406,19 @@ def balance_and_sum(vocal: np.ndarray, beat: np.ndarray, sr: int,
 
     v_lufs = audio_io.loudness_region_lufs(v, sr, regions)
     b_lufs = audio_io.loudness_region_lufs(b, sr, regions)
+    method = "vocal_to_instrumental_ratio_over_active_regions"
+
+    if not (np.isfinite(v_lufs) and np.isfinite(b_lufs)):
+        # The LUFS meter gates everything under -70 LUFS and reports
+        # nothing for a very quiet take. Leaving the gain at zero then sent
+        # the voice out 70 dB under the beat. RMS over the same regions has
+        # no gate, so the ratio can still be set.
+        v_lufs, b_lufs = _region_rms_db(v, regions), _region_rms_db(b, regions)
+        method = "rms_ratio_over_active_regions (loudness meter gated out)"
 
     if np.isfinite(v_lufs) and np.isfinite(b_lufs):
         current_vir = v_lufs - b_lufs
-        gain_db = float(np.clip(target_vir - current_vir, -24.0, 24.0))
+        gain_db = float(np.clip(target_vir - current_vir, -24.0, 60.0))
     else:
         current_vir, gain_db = 0.0, 0.0
 
@@ -421,7 +439,7 @@ def balance_and_sum(vocal: np.ndarray, beat: np.ndarray, sr: int,
         "vocal_active_lufs": (round(float(v_lufs), 2) if np.isfinite(v_lufs) else None),
         "beat_under_vocal_lufs": (round(float(b_lufs), 2) if np.isfinite(b_lufs) else None),
         "n_active_regions": len(regions),
-        "method": "vocal_to_instrumental_ratio_over_active_regions",
+        "method": method,
     }
     log.info("  balance: VIR %.1f -> %.1f dB (vocal %+.1f dB)",
              current_vir, target_vir, gain_db)

@@ -53,6 +53,7 @@ class Capabilities:
     audio_separator: bool = False   # Mel-Band RoFormer
     whisper: bool = False           # lyrics + intelligibility QC
     sklearn: bool = False           # structure segmentation
+    silero_vad: bool = False        # is there a voice in the take at all
 
     # -- Environment -------------------------------------------------------
     device: str = "cpu"             # cpu | cuda | mps
@@ -62,7 +63,8 @@ class Capabilities:
     def summary(self) -> str:
         req = ["librosa", "soundfile"]
         rec = ["pedalboard", "pyloudnorm", "pyrubberband", "rubberband_cli"]
-        opt = ["madmom", "torchcrepe", "demucs", "audio_separator", "whisper", "sklearn"]
+        opt = ["madmom", "torchcrepe", "demucs", "audio_separator", "whisper", "sklearn",
+               "silero_vad"]
 
         def fmt(names):
             return "\n".join(
@@ -195,6 +197,7 @@ def detect() -> Capabilities:
         audio_separator=_has("audio_separator"),
         whisper=_has("whisper") or _has("faster_whisper"),
         sklearn=_has("sklearn"),
+        silero_vad=_has("silero_vad"),
         platform=f"{platform.system()} {platform.machine()}",
         python=sys.version.split()[0],
     )

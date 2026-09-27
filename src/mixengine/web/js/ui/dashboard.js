@@ -286,11 +286,17 @@ function askQuestions(questions) {
  * slot for the next take. A button that still read "Make the render"
  * underneath that choice described the opposite of what it did.
  */
+const REFUSAL_ASKS = {
+  noise: 'upload a cleaner take',
+  length: 'upload the full take',
+  voice: 'upload the vocal take',
+};
+
 function syncAskButton() {
   const { refused } = readAnswers();
+  const ask = REFUSAL_ASKS[refused] || 'upload a different take';
   $('#ask-go span').textContent = !refused ? 'Make the render'
-    : refused === 'length' ? 'Upload the full take'
-      : 'Upload a cleaner take';
+    : ask[0].toUpperCase() + ask.slice(1);
 }
 
 function readAnswers() {
@@ -314,8 +320,7 @@ async function submitAnswers(e) {
     // say which kind, rather than rendering the one they just turned down.
     $('#ask').hidden = true;
     clearSlot('vocal');
-    $('#vocal-meta').textContent = refused === 'length'
-      ? 'upload the full take' : 'upload a cleaner take';
+    $('#vocal-meta').textContent = REFUSAL_ASKS[refused] || 'upload a different take';
     $('#slot-vocal').scrollIntoView({ behavior: 'smooth', block: 'center' });
     return;
   }

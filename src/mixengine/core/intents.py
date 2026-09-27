@@ -32,6 +32,7 @@ ENTRIES = ("section", "top")
 # client that posted the question's own default look like a bad request.
 NOISE_ANSWERS = ("accept", "rerecord")
 LENGTH_ANSWERS = ("accept", "rerecord")
+VOICE_ANSWERS = ("accept", "rerecord")
 
 
 def _choice(value: Any, allowed: tuple, field_name: str) -> Optional[str]:
@@ -106,6 +107,7 @@ class Intents:
     entry: Optional[str] = None            # section: come in at the drop | top
     noise: Optional[str] = None            # accept: render a severe take anyway
     length: Optional[str] = None           # accept: render a take too short for a song
+    voice: Optional[str] = None            # accept: use a file with no voice as the vocal
 
     AUTO: ClassVar["Intents"]
 
@@ -134,6 +136,7 @@ class Intents:
             entry=_choice(d.get("entry"), ENTRIES, "entry"),
             noise=_choice(d.get("noise"), NOISE_ANSWERS, "noise"),
             length=_choice(d.get("length"), LENGTH_ANSWERS, "length"),
+            voice=_choice(d.get("voice"), VOICE_ANSWERS, "voice"),
         )
 
     def to_dict(self) -> Dict[str, Any]:

@@ -22,7 +22,8 @@ BASIC = {"rhythm": "librosa", "pitch": "pyin", "separation": "none"}
 FULL = {"rhythm": "madmom", "pitch": "torchcrepe", "separation": "demucs"}
 
 # What a take analysed today carries: the judgement the questions read.
-JUDGED = {"noise": {"verdict": "clean"}, "performance_span": {}}
+JUDGED = {"noise": {"verdict": "clean"}, "performance_span": {},
+          "voice": {"verdict": "voice"}}
 
 
 class TestImprovementOver(unittest.TestCase):
@@ -76,6 +77,22 @@ class TestDocumentWrappers(unittest.TestCase):
                    "conditioned_path": __file__, **JUDGED}
         self.assertIsNone(vocal_dna.can_improve(clean, now=now))
         self.assertTrue(vocal_dna.can_improve(mixture, now=now))
+
+    def test_a_vocal_never_checked_for_a_voice_is_analysed_again(self):
+        """Only where the voice model is installed: without it the check
+        cannot be made, so an old document is not sent back for it."""
+        from mixengine.core.capabilities import CAPS
+        doc = {"status": "ok", "needs_separation": False, "analysis_backends": BASIC,
+               "conditioned_path": __file__, **JUDGED}
+        del doc["voice"]
+        had = CAPS.silero_vad
+        try:
+            CAPS.silero_vad = True
+            self.assertIn("voice", vocal_dna.can_improve(doc, now=BASIC))
+            CAPS.silero_vad = False
+            self.assertIsNone(vocal_dna.can_improve(doc, now=BASIC))
+        finally:
+            CAPS.silero_vad = had
 
     def test_a_vocal_never_judged_for_noise_is_analysed_again(self):
         """The noise verdict and the performance span are what the person

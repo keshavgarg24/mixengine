@@ -127,5 +127,24 @@ class TestWhatLoadTellsThePerson(unittest.TestCase):
         self.assertEqual(q.repairs, [])
 
 
+class TestDeclip(unittest.TestCase):
+    """The repaired arc used to be clipped straight back to full scale, so
+    hard clipping -- the case the repair exists for -- was left as it was."""
+
+    def test_hard_clipping_is_actually_repaired(self):
+        t = np.arange(SR * 4) / SR
+        clean = np.sin(2 * np.pi * 220 * t).astype(np.float32)
+        clipped = np.clip(clean * 3, -1, 1).astype(np.float32)
+        out = audio_io.declip(clipped)[:, 0]
+        at_ceiling = lambda a: int((np.abs(a) >= 0.9995 * np.abs(a).max()).sum())  # noqa: E731
+        self.assertLess(at_ceiling(out), at_ceiling(clipped) * 0.05)
+        self.assertGreater(float(np.corrcoef(out, clean)[0, 1]), 0.999)
+        self.assertLessEqual(float(np.abs(out).max()), 1.0)
+
+    def test_a_clean_take_passes_through_untouched(self):
+        y = _voice()
+        np.testing.assert_array_equal(audio_io.declip(y)[:, 0], y)
+
+
 if __name__ == "__main__":
     unittest.main()

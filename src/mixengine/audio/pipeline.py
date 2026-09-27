@@ -94,6 +94,13 @@ def _render_notes(vdna: dict, tinfo: dict) -> List[str]:
         notes.append("room reverb was reduced on the vocal")
     if r.get("gap_gate"):
         notes.append("the gaps between lines were muted")
+    try:
+        gain = float(r.get("gain_db") or 0.0)
+    except (TypeError, ValueError):
+        gain = 0.0
+    if gain:
+        notes.append("the take was %s by %.0f dB to a working level"
+                     % ("raised" if gain > 0 else "lowered", abs(gain)))
     span = tinfo.get("performance_span") or {}
     if span.get("decision") == "trim" and span.get("note"):
         notes.append("the vocal was %s" % span["note"])

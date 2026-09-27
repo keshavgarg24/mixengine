@@ -45,7 +45,8 @@ def extract(path: str,
             user_key: Optional[str] = None,
             vocal_id: Optional[str] = None,
             reference_beat_path: Optional[str] = None,
-            reference_beat_dna: Optional[dict] = None) -> dict:
+            reference_beat_dna: Optional[dict] = None,
+            reference_stated: bool = True) -> dict:
     """Analyse an uploaded vocal. Returns the DNA document.
 
     `user_bpm` / `user_key` are optional hints from the upload form. Asking
@@ -59,7 +60,12 @@ def extract(path: str,
     than any other optional input for a take recorded on speakers.
     `reference_beat_dna` is that beat's analysis; with it, the vocal's tempo
     is taken from the beat rather than estimated, because the singer sang to
-    it.
+    it. `reference_stated` is whether anyone said so: the two-step flow
+    passes the beat it was given without that claim, so bleed is looked
+    for -- a take recorded over speakers carries the beat, and the beat is
+    known, so it is cancelled rather than guessed at by a separator -- but
+    the beat's tempo is trusted as the take's only when the bleed proves
+    the take was performed to it, or the person said it was.
     """
     t_start = time.time()
     vocal_id = vocal_id or os.path.splitext(os.path.basename(path))[0]
@@ -109,6 +115,12 @@ def extract(path: str,
     y, restore_report = separation.condition_vocal(y, sr, quality_post,
                                                    separated=separated)
     log.info("  restoration: %s", {k: v for k, v in restore_report.items() if v})
+    # Working level first, so the floor below and every threshold after
+    # it are measured on the take the mixer will receive.
+    y, staged_db = analysis.stage_level(y, sr)
+    if staged_db:
+        restore_report["gain_db"] = staged_db
+        log.info("  level: %+.1f dB to the working level", staged_db)
     # The mixer's expander opens above this floor. It must be the floor of
     # the take the mixer receives -- the restored one -- not the input's:
     # a threshold set 6 dB over a noise floor that restoration has since
@@ -119,6 +131,10 @@ def extract(path: str,
     # person hears about: a take the chain could make clean needs no
     # question, one it could not is theirs to re-record or accept.
     phrases = analysis.detect_phrases(y, sr)
+    voice = analysis.voice_presence(y, sr, phrases)
+    if voice:
+        log.info("  voice: %s (speech in %.0f%% of the phrases)",
+                 voice["verdict"], voice["speech_in_phrases"] * 100)
     noise_out = analysis.noise_verdict(y, sr, phrases)
     noise = {"verdict": noise_out["verdict"],
              "snr_db": noise_out["snr_db"],
@@ -195,9 +211,16 @@ def extract(path: str,
             % noise["snr_db"])
     if span["default"] == "trim":
         extra_warnings.append("lead-in cut by default: %s" % span["reason"])
+    if voice and voice["verdict"] == "no_voice":
+        extra_warnings.append(
+            "no voice was found in this file (the voice detector hears "
+            "speech in %.0f%% of its phrases); it sounds like an "
+            "instrumental or a tone, not a take"
+            % (voice["speech_in_phrases"] * 100))
 
     ref_bpm = float((reference_beat_dna or {}).get("bpm") or 0.0)
-    if ref_bpm > 0:
+    performed_to_it = reference_stated or bool((bleed_report or {}).get("applied"))
+    if ref_bpm > 0 and performed_to_it:
         assert reference_beat_dna is not None      # ref_bpm came from it
         # The singer heard this beat and sang to it. That is not an estimate
         # of the vocal's tempo, it is the vocal's tempo, and it outranks
@@ -305,6 +328,7 @@ def extract(path: str,
         "syllable_rate": round(float(syllable_rate), 2),
         "performance_span": span,
         "noise": noise,
+        "voice": voice,
 
         # -- Symbolic -----------------------------------------------------
         "duration_s": round(duration, 2),
@@ -514,6 +538,8 @@ def can_improve(doc: Optional[dict],
     # is asked before a render; a document without them cannot ask.
     if "noise" not in doc or "performance_span" not in doc:
         return "analysed before the take was judged for noise and lead-in"
+    if CAPS.silero_vad and "voice" not in doc:
+        return "analysed before the take was checked for a voice"
     return improvement_over(doc.get("analysis_backends"),
                             want_separation=bool(doc.get("needs_separation")),
                             now=now)
