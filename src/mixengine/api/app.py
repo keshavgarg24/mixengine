@@ -228,7 +228,8 @@ def create_app(data_root: str = "./data") -> FastAPI:
                timing: Optional[str] = Form(None),
                space: Optional[str] = Form(None),
                separate: Optional[str] = Form(None),
-               loudness: Optional[str] = Form(None)):
+               loudness: Optional[str] = Form(None),
+               nudge: Optional[str] = Form(None)):
         """Render a song.
 
         Two shapes, because two callers need different things. The
@@ -241,7 +242,7 @@ def create_app(data_root: str = "./data") -> FastAPI:
             intents = Intents.from_dict({
                 "vocal_state": vocal_state, "relationship": relationship,
                 "tune": tune, "timing": timing, "space": space,
-                "separate": separate, "loudness": loudness,
+                "separate": separate, "loudness": loudness, "nudge": nudge,
                 "bpm": bpm, "key": key})
         except ValueError as e:
             raise HTTPException(422, str(e))
