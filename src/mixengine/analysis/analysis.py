@@ -1126,12 +1126,15 @@ def noise_verdict(y: np.ndarray, sr: int,
 
     Verdicts: clean (>= 30 dB), light (>= 20), heavy (>= 14), severe.
     A severe take cannot be made clean -- the separator and subtraction
-    together buy about 12 dB -- and the person is told so.
+    together buy about 12 dB -- and the person is told so. A buffer too
+    small to hold both words and a gap is "unknown": nothing is measured,
+    so nothing is claimed. Calling that severe told someone whose take
+    was a fraction of a second long that their room was too noisy.
     """
     mono = dsp.to_mono(y)
     frame, hop = int(0.025 * sr), int(0.010 * sr)
     r_db = dsp.lin_to_db(dsp.frame_rms(mono, frame, hop))
-    out = {"snr_db": 0.0, "verdict": "severe", "active_db": None,
+    out = {"snr_db": 0.0, "verdict": "unknown", "active_db": None,
            "floor_db": None, "gap_fraction": 0.0}
     if r_db.size < 8:
         return out

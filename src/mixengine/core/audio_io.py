@@ -46,6 +46,7 @@ class AudioQuality:
     bandwidth_hz: float = 0.0
     dc_offset: float = 0.0
     is_fake_stereo: bool = False
+    is_inverted_stereo: bool = False
     is_silent: bool = False
     estimated_rt60_s: float = 0.0
     warnings: list = field(default_factory=list)
@@ -62,16 +63,44 @@ class AudioQuality:
         return d
 
 
+# Below this L/R correlation the second channel is the first with its
+# polarity flipped -- a mis-wired cable or interface, not a stereo image.
+INVERTED_STEREO_CORR = -0.9
+
+
+def _channel_correlation(y2: np.ndarray) -> Optional[float]:
+    """Pearson correlation of the two channels; None unless both carry signal."""
+    if y2.shape[1] != 2:
+        return None
+    a, b = y2[:, 0], y2[:, 1]
+    if np.std(a) <= 1e-9 or np.std(b) <= 1e-9:
+        return None
+    return float(np.corrcoef(a, b)[0, 1])
+
+
 def probe_quality(y: np.ndarray, sr: int, path: str = "") -> AudioQuality:
     """Measure everything the downstream chain needs to adapt to."""
     y2 = dsp.as_2d(y)
-    mono = dsp.to_mono(y2)
     q = AudioQuality(
         path=path,
         duration_s=len(y2) / sr,
         sample_rate=sr,
         channels=y2.shape[1],
     )
+
+    # Polarity-inverted channels cancel when summed to mono, which every
+    # measurement below and the engine itself does: the voice then reads
+    # as silence or noise. Measure the take with the second channel flipped
+    # back; `load` applies the same flip to the audio it hands out.
+    corr = _channel_correlation(y2)
+    if corr is not None and corr < INVERTED_STEREO_CORR:
+        q.is_inverted_stereo = True
+        q.warnings.append(
+            "the two channels are polarity-inverted copies - one was flipped "
+            "so the voice does not cancel in mono")
+        y2 = y2 * np.array([1.0, -1.0], dtype=y2.dtype)
+        corr = -corr
+    mono = dsp.to_mono(y2)
 
     if len(mono) == 0 or np.max(np.abs(mono)) < 1e-6:
         q.is_silent = True
@@ -94,11 +123,7 @@ def probe_quality(y: np.ndarray, sr: int, path: str = "") -> AudioQuality:
     q.bandwidth_hz = _estimate_bandwidth(mono, sr)
 
     # Fake stereo: two channels carrying the same signal.
-    if y2.shape[1] == 2:
-        a, b = y2[:, 0], y2[:, 1]
-        if np.std(a) > 1e-9 and np.std(b) > 1e-9:
-            corr = float(np.corrcoef(a, b)[0, 1])
-            q.is_fake_stereo = corr > 0.9995
+    q.is_fake_stereo = corr is not None and corr > 0.9995
 
     q.estimated_rt60_s = _estimate_rt60(mono, sr)
 
@@ -189,6 +214,9 @@ def load(path: str, sr: int = SR, mono: bool = False,
     if normalize_format:
         if abs(q.dc_offset) > 1e-4:
             y = y - np.mean(y, axis=0, keepdims=True)
+        if q.is_inverted_stereo and y.shape[1] == 2:
+            y = y * np.array([1.0, -1.0], dtype=y.dtype)
+            log.info("flipped an inverted channel: %s", os.path.basename(path))
         if q.is_fake_stereo and y.shape[1] == 2:
             y = y[:, :1]
             log.info("collapsed fake stereo to mono: %s", os.path.basename(path))

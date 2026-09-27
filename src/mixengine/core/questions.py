@@ -28,6 +28,13 @@ PERFORMANCE_ASK_BELOW = 0.7
 # A key or tempo the detector was this unsure of is confirmed.
 KEY_ASK_BELOW = 0.5
 BPM_ASK_BELOW = 0.4
+# Shorter than this and there is no performance to build a song from: it is
+# `analysis.LEAD_IN_MIN_RUN_S`, the shortest run of phrases the span finder
+# will call the performance.
+MIN_TAKE_S = 6.0
+# An answer that means "do not render this, I will bring a better take".
+# It is a real answer -- it is parsed and kept -- but it satisfies no block.
+REFUSALS = ("rerecord",)
 
 PERFORMANCE_LABELS = {"rap": "rap", "melodic_rap": "melodic rap",
                       "sung": "singing", "spoken": "spoken word"}
@@ -50,6 +57,31 @@ class Question:
 
 def _opt(value: str, label: str) -> Dict[str, str]:
     return {"value": value, "label": label}
+
+
+def _length_question(vdna: dict) -> Optional[Question]:
+    """A take too short to be a performance.
+
+    The render is cut to the length of the take, so a one-second upload
+    buys a one-second song out of a three-minute beat. Nothing failed, so
+    nothing said anything: the job reported success and the person got a
+    fragment. Asked, not assumed -- a deliberate fragment is renderable.
+    """
+    duration = float(vdna.get("duration_s") or 0.0)
+    if duration <= 0.0 or duration >= MIN_TAKE_S:
+        return None
+    return Question(
+        id="length", severity="block", intent="length",
+        text=("This take is only %.1f s long. The song is cut to the length "
+              "of the take, so there is not enough here to build one. Upload "
+              "the full take and the whole beat gets used."
+              % duration),
+        options=[_opt("rerecord", "I'll upload the full take"),
+                 _opt("accept", "Render just this much")],
+        default="rerecord",
+        reason=("a performance needs at least %.0f s of singing or rapping "
+                "to build a song from" % MIN_TAKE_S),
+        detail={"duration_s": round(duration, 2)})
 
 
 def _noise_question(vdna: dict) -> Optional[Question]:
@@ -209,7 +241,8 @@ def _entry_question(bdna: Optional[dict]) -> Optional[Question]:
 
 def questions_for(vdna: dict, bdna: Optional[dict] = None) -> List[Question]:
     """Everything the analysis could not settle, most serious first."""
-    out = [q for q in (_noise_question(vdna), _start_question(vdna),
+    out = [q for q in (_length_question(vdna),
+                       _noise_question(vdna), _start_question(vdna),
                        _performance_question(vdna), _key_question(vdna),
                        _bpm_question(vdna), _entry_question(bdna)) if q]
     order = {"block": 0, "warn": 1, "info": 2}
@@ -222,4 +255,4 @@ def unanswered_blocks(questions: List[Question],
     """Blocking questions whose intent the caller has not set."""
     return [q for q in questions
             if q.severity == "block"
-            and getattr(intents, q.intent, None) in (None, "")]
+            and getattr(intents, q.intent, None) in (None, "") + REFUSALS]

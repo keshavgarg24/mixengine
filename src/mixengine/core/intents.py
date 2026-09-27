@@ -25,7 +25,13 @@ SEPARATIONS = ("never", "always")
 PERFORMANCES = ("rap", "melodic_rap", "sung", "spoken")
 LEAD_INS = ("trim", "keep")
 ENTRIES = ("section", "top")
-NOISE_ANSWERS = ("accept",)
+# Every blocking question offers the same two answers: render it anyway,
+# or bring a better take. Both are valid values -- "rerecord" is parsed
+# and kept, and `questions.unanswered_blocks` reads it as the refusal it
+# is, so the render stays blocked. Rejecting the value outright made a
+# client that posted the question's own default look like a bad request.
+NOISE_ANSWERS = ("accept", "rerecord")
+LENGTH_ANSWERS = ("accept", "rerecord")
 
 
 def _choice(value: Any, allowed: tuple, field_name: str) -> Optional[str]:
@@ -99,6 +105,7 @@ class Intents:
     lead_in: Optional[str] = None          # trim | keep the sound before line 1
     entry: Optional[str] = None            # section: come in at the drop | top
     noise: Optional[str] = None            # accept: render a severe take anyway
+    length: Optional[str] = None           # accept: render a take too short for a song
 
     AUTO: ClassVar["Intents"]
 
@@ -126,6 +133,7 @@ class Intents:
             lead_in=_choice(d.get("lead_in"), LEAD_INS, "lead_in"),
             entry=_choice(d.get("entry"), ENTRIES, "entry"),
             noise=_choice(d.get("noise"), NOISE_ANSWERS, "noise"),
+            length=_choice(d.get("length"), LENGTH_ANSWERS, "length"),
         )
 
     def to_dict(self) -> Dict[str, Any]:

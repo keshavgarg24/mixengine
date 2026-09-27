@@ -90,6 +90,15 @@ class TestNoiseVerdict(unittest.TestCase):
         order = [self.verdict(a)["snr_db"] for a in (0.001, 0.02, 0.06, 0.15)]
         self.assertEqual(order, sorted(order, reverse=True))
 
+    def test_a_buffer_too_small_to_measure_says_so_instead_of_severe(self):
+        """Fifty milliseconds holds neither a word nor a gap. Calling that
+        severe told someone their room was too noisy to record in."""
+        v = analysis.noise_verdict(tone(0.05), SR, [])
+        self.assertEqual(v["verdict"], "unknown")
+        self.assertEqual(v["snr_db"], 0.0)
+        asked = questions.questions_for({"noise": v, "duration_s": 30.0})
+        self.assertNotIn("noise", [q.id for q in asked])
+
 
 class TestPerformanceSpan(unittest.TestCase):
     """The repro-2 shape: a loud blob at 0-3.5 s, a blip at 5.6 s, and
@@ -279,6 +288,57 @@ class TestQuestions(unittest.TestCase):
         self.assertEqual([q.id for q in qs], ["entry"])
         self.assertEqual(qs[0].default, "section")
 
+    SHORT = {"duration_s": 1.5, "noise": {"verdict": "clean", "snr_db": 40.0},
+             "performance_span": {"lead_in_s": 0.0, "tail_s": 0.0,
+                                  "default": "keep"},
+             "performance_type": "rap", "performance_confidence": 0.85}
+
+    def test_a_take_too_short_for_a_song_blocks_and_says_how_long_it_is(self):
+        """The render is cut to the length of the take, so a 1.5 s upload
+        used to come back as a 1.5 s song with nothing said about it."""
+        qs = questions.questions_for(self.SHORT)
+        self.assertEqual([q.id for q in qs], ["length"])
+        q = qs[0]
+        self.assertEqual((q.severity, q.default, q.intent),
+                         ("block", "rerecord", "length"))
+        self.assertIn("1.5 s", q.text)
+        self.assertEqual(questions.unanswered_blocks(qs, Intents.AUTO), [q])
+        self.assertEqual(questions.unanswered_blocks(
+            qs, Intents.from_dict({"length": "accept"})), [])
+
+    def test_a_take_long_enough_to_perform_is_not_asked_about_length(self):
+        for duration in (questions.MIN_TAKE_S, 36.5, 0.0, None):
+            vdna = dict(self.SHORT, duration_s=duration)
+            self.assertNotIn("length", [q.id for q in
+                                        questions.questions_for(vdna)],
+                             "asked about a %r-second take" % duration)
+
+    def test_a_take_both_short_and_severe_is_asked_about_both(self):
+        vdna = dict(self.SHORT, noise={"verdict": "severe", "snr_db": 10.0,
+                                       "input_snr_db": 6.0})
+        qs = questions.questions_for(vdna)
+        self.assertEqual(sorted(q.id for q in qs), ["length", "noise"])
+        self.assertEqual(len(questions.unanswered_blocks(qs, Intents.AUTO)), 2)
+
+    def test_saying_a_better_take_is_coming_does_not_unblock_the_render(self):
+        """"I'll upload a cleaner take" is a real answer -- it is parsed and
+        kept -- but it is the opposite of permission to render."""
+        qs = questions.questions_for(self.SEVERE)
+        refused = Intents.from_dict({"noise": "rerecord"})
+        self.assertEqual(refused.noise, "rerecord")
+        self.assertEqual([q.id for q in
+                          questions.unanswered_blocks(qs, refused)], ["noise"])
+
+    def test_every_blocking_question_offers_a_refusal_and_a_way_past(self):
+        for vdna in (self.SEVERE, self.SHORT):
+            for q in questions.questions_for(vdna):
+                if q.severity != "block":
+                    continue
+                values = [o["value"] for o in q.options]
+                self.assertIn("accept", values, q.id)
+                self.assertEqual(q.default, "rerecord", q.id)
+                self.assertTrue(set(values) & set(questions.REFUSALS), q.id)
+
     def test_every_question_serialises(self):
         for q in questions.questions_for(self.SEVERE):
             d = q.to_dict()
@@ -295,9 +355,20 @@ class TestIntentAnswers(unittest.TestCase):
                          ("melodic_rap", "keep", "top", "accept"))
         self.assertFalse(i.is_all_auto)
         for bad in ({"performance": "opera"}, {"lead_in": "maybe"},
-                    {"entry": "middle"}, {"noise": "rerecord"}):
+                    {"entry": "middle"}, {"noise": "ignore"},
+                    {"length": "maybe"}):
             with self.assertRaises(ValueError):
                 Intents.from_dict(bad)
+
+    def test_the_value_a_blocking_question_offers_is_a_value_it_accepts(self):
+        """A client that posts the question's own default must not get a
+        422: every option value the engine offers has to parse."""
+        vdna = {"duration_s": 1.5,
+                "noise": {"verdict": "severe", "snr_db": 10.0,
+                          "input_snr_db": 6.0}}
+        for q in questions.questions_for(vdna):
+            for option in q.options:
+                Intents.from_dict({q.intent: option["value"]})
 
 
 class TestKeepPerformance(unittest.TestCase):

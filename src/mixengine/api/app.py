@@ -282,7 +282,8 @@ def create_app(data_root: str = "./data") -> FastAPI:
                performance: Optional[str] = Form(None),
                lead_in: Optional[str] = Form(None),
                entry: Optional[str] = Form(None),
-               noise: Optional[str] = Form(None)):
+               noise: Optional[str] = Form(None),
+               length: Optional[str] = Form(None)):
         """Render a song.
 
         Three shapes, because three callers need different things. The
@@ -300,7 +301,7 @@ def create_app(data_root: str = "./data") -> FastAPI:
             vocal_state=vocal_state, relationship=relationship, tune=tune,
             timing=timing, space=space, separate=separate, loudness=loudness,
             nudge=nudge, bpm=bpm, key=key, performance=performance,
-            lead_in=lead_in, entry=entry, noise=noise)
+            lead_in=lead_in, entry=entry, noise=noise, length=length)
 
         if vocal is not None and beat is not None:
             job = svc.start_session_render(_save_upload(vocal, "vocals"),

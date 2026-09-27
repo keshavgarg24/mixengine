@@ -255,26 +255,27 @@ function askQuestions(questions) {
 
 function readAnswers() {
   const out = {};
-  let rerecord = false;
+  let refused = null;                       // id of the question turned down
   for (const fs of $('#ask-list').querySelectorAll('.ask-q')) {
     const picked = fs.querySelector('input:checked');
     if (!picked) continue;
-    if (picked.value === 'rerecord') { rerecord = true; continue; }
+    if (picked.value === 'rerecord') { refused = refused || fs.dataset.id; continue; }
     if (picked.value === 'auto') continue;
     out[fs.dataset.intent] = picked.value;
   }
-  return { answers: out, rerecord };
+  return { answers: out, refused };
 }
 
 async function submitAnswers(e) {
   e.preventDefault();
-  const { answers, rerecord } = readAnswers();
-  if (rerecord) {
-    // The person is going to bring a cleaner take. Free the slot for it
-    // and say why, rather than rendering the one they just rejected.
+  const { answers, refused } = readAnswers();
+  if (refused) {
+    // The person is going to bring a better take. Free the slot for it and
+    // say which kind, rather than rendering the one they just turned down.
     $('#ask').hidden = true;
     clearSlot('vocal');
-    $('#vocal-meta').textContent = 'upload a cleaner take';
+    $('#vocal-meta').textContent = refused === 'length'
+      ? 'upload the full take' : 'upload a cleaner take';
     $('#slot-vocal').scrollIntoView({ behavior: 'smooth', block: 'center' });
     return;
   }
