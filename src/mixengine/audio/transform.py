@@ -420,12 +420,15 @@ def _placement_candidates(downbeats: np.ndarray,
     return out or [(first_onset_s, "none")]
 
 
-# A rotation off the tracker's own phase must beat it by this much of the
-# phrase-start cost, or the tracker's phase stands. Whole beats only: the
-# tracker's sub-beat phase proved consistent across re-encodings of the
-# same take (0.11-0.13 s on five of seven), while half-beat rotations on
-# the phrase-start evidence flipped between them.
-PHASE_ROTATION_MARGIN = 0.25
+# A rotation off the tracker's own phase wins only on an unambiguous
+# surface: it must halve the phrase-start cost *and* put the lines on the
+# bar lines outright. The tracker's phase proved the more consistent
+# signal -- identical across re-encodings of one take to 0.01 s -- while
+# a rotation that merely edged the cost down by a quarter fired on four
+# of eight variants and scattered their landings by 2 s. Whole beats
+# only, for the same reason.
+PHASE_ROTATION_RATIO = 0.5
+PHASE_ROTATION_MAX_COST = 0.12
 
 
 def choose_bar_phase(shift: float, beat_s: float, starts: np.ndarray,
@@ -465,7 +468,8 @@ def choose_bar_phase(shift: float, beat_s: float, starts: np.ndarray,
             cand = ((cand + bar_s / 2.0) % bar_s) - bar_s / 2.0
             cost = _bar_phase_cost(starts + cand, downbeats)
             surface["%+d" % int(sign * rot)] = round(cost, 4)
-            if cost < best_cost - PHASE_ROTATION_MARGIN * max(tracker_cost, 1e-6):
+            if (cost < best_cost and cost <= PHASE_ROTATION_MAX_COST
+                    and cost <= PHASE_ROTATION_RATIO * tracker_cost):
                 best_shift, best_cost, best_rot = cand, cost, sign * rot
     info.update({"rotation_beats": best_rot, "cost": round(best_cost, 4),
                  "tracker_cost": round(tracker_cost, 4), "surface": surface})
