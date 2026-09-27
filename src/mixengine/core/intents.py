@@ -22,6 +22,10 @@ VOCAL_STATES = ("raw", "tuned", "finished")
 RELATIONSHIPS = ("locked", "free")
 SPACES = ("keep", "match", "add")
 SEPARATIONS = ("never", "always")
+PERFORMANCES = ("rap", "melodic_rap", "sung", "spoken")
+LEAD_INS = ("trim", "keep")
+ENTRIES = ("section", "top")
+NOISE_ANSWERS = ("accept",)
 
 
 def _choice(value: Any, allowed: tuple, field_name: str) -> Optional[str]:
@@ -89,6 +93,12 @@ class Intents:
     separate: Optional[str] = None         # never | always
     loudness: Optional[float] = None       # target LUFS
     nudge: Optional[float] = None          # beats; +1 = a beat later
+    # Answers to what the analysis could not settle on its own. Each is
+    # asked only when the measurement was unsure; see core/questions.py.
+    performance: Optional[str] = None      # rap | melodic_rap | sung | spoken
+    lead_in: Optional[str] = None          # trim | keep the sound before line 1
+    entry: Optional[str] = None            # section: come in at the drop | top
+    noise: Optional[str] = None            # accept: render a severe take anyway
 
     AUTO: ClassVar["Intents"]
 
@@ -111,6 +121,11 @@ class Intents:
             separate=_choice(d.get("separate"), SEPARATIONS, "separate"),
             loudness=_number(d.get("loudness"), "loudness", -30.0, -3.0),
             nudge=_number(d.get("nudge"), "nudge", -16.0, 16.0),
+            performance=_choice(d.get("performance"), PERFORMANCES,
+                                "performance"),
+            lead_in=_choice(d.get("lead_in"), LEAD_INS, "lead_in"),
+            entry=_choice(d.get("entry"), ENTRIES, "entry"),
+            noise=_choice(d.get("noise"), NOISE_ANSWERS, "noise"),
         )
 
     def to_dict(self) -> Dict[str, Any]:

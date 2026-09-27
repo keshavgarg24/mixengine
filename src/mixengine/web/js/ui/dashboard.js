@@ -168,27 +168,132 @@ function paintResult(render) {
   }).join('');
 }
 
-async function run() {
+/**
+ * Two steps, not one.
+ *
+ * The engine first listens to both files and says what it could not
+ * settle on its own — a count-in before the first line, a take that
+ * reads as rap but not clearly, noise it could not remove. Those are
+ * facts the person who made the recording has and the engine does not,
+ * so they are asked, with the engine's own answer preselected, before
+ * a minute of rendering is spent on the wrong one. When there is
+ * nothing to ask the render starts straight away.
+ */
+let prepared = null;   // { vocal_path, beat_path, questions } from /api/prepare
+
+function stageProgress(j) {
+  const i = STAGES.indexOf(j.stage);
+  showStage(j.message || j.stage || 'Working…',
+            8 + (i < 0 ? 0 : (i + 1) / STAGES.length * 88));
+}
+
+function beginRun() {
   $('#go').disabled = true;
   $('#result').hidden = true;
+  $('#ask').hidden = true;
   $('#run').hidden = false;
   $('#plan').hidden = true;
+  $('#rail-fill').style.background = '';
+}
+
+function failRun(err) {
+  showStage(err.message, 100);
+  $('#rail-fill').style.background = 'var(--red)';
+  $('#go').disabled = false;
+}
+
+async function run() {
+  beginRun();
   showStage('Uploading…', 4);
 
   const body = new FormData();
   body.append('vocal', slots.vocal.file);
   body.append('beat', slots.beat.file);
+  const intents = readIntents();
+  if (intents.key) body.append('key', intents.key);
+
+  try {
+    const job = await api('/api/prepare', { method: 'POST', body });
+    prepared = await pollJob(job.id, { onProgress: stageProgress });
+  } catch (err) {
+    failRun(err);
+    return;
+  }
+
+  const questions = prepared.questions || [];
+  if (questions.length) {
+    showStage('Waiting for you', 40);
+    $('#run').hidden = true;
+    askQuestions(questions);
+    $('#go').disabled = false;
+    return;
+  }
+  await renderPrepared({});
+}
+
+function askQuestions(questions) {
+  const block = questions.some(q => q.severity === 'block');
+  $('#ask-lead').textContent = block
+    ? 'One of these decides whether this take can be rendered at all.'
+    : 'A few things the engine could not settle from the audio alone. Its own answer is preselected.';
+  $('#ask-list').innerHTML = questions.map(q => `
+    <fieldset class="ask-q ${esc(q.severity)}" data-id="${esc(q.id)}" data-intent="${esc(q.intent)}">
+      <legend>${esc(q.text)}</legend>
+      <div class="ask-opts">
+        ${q.options.map(o => `
+          <label class="ask-opt">
+            <input type="radio" name="q-${esc(q.id)}" value="${esc(o.value)}"
+                   ${o.value === q.default ? 'checked' : ''}>
+            <span>${esc(o.label)}</span>
+          </label>`).join('')}
+      </div>
+      ${q.reason ? `<p class="ask-why">${esc(q.reason)}</p>` : ''}
+    </fieldset>`).join('');
+  $('#ask').hidden = false;
+  $('#ask').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function readAnswers() {
+  const out = {};
+  let rerecord = false;
+  for (const fs of $('#ask-list').querySelectorAll('.ask-q')) {
+    const picked = fs.querySelector('input:checked');
+    if (!picked) continue;
+    if (picked.value === 'rerecord') { rerecord = true; continue; }
+    if (picked.value === 'auto') continue;
+    out[fs.dataset.intent] = picked.value;
+  }
+  return { answers: out, rerecord };
+}
+
+async function submitAnswers(e) {
+  e.preventDefault();
+  const { answers, rerecord } = readAnswers();
+  if (rerecord) {
+    // The person is going to bring a cleaner take. Free the slot for it
+    // and say why, rather than rendering the one they just rejected.
+    $('#ask').hidden = true;
+    clearSlot('vocal');
+    $('#vocal-meta').textContent = 'upload a cleaner take';
+    $('#slot-vocal').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    return;
+  }
+  await renderPrepared(answers);
+}
+
+async function renderPrepared(answers) {
+  beginRun();
+  showStage('Starting the render…', 8);
+
+  const body = new FormData();
+  body.append('vocal_path', prepared.vocal_path);
+  body.append('beat_path', prepared.beat_path);
   for (const [k, v] of Object.entries(readIntents())) body.append(k, v);
+  for (const [k, v] of Object.entries(answers)) body.append(k, v);
 
   try {
     const job = await api('/api/render', { method: 'POST', body });
-    const result = await pollJob(job.id, {
-      onProgress: j => {
-        const i = STAGES.indexOf(j.stage);
-        showStage(j.message || j.stage || 'Working…',
-                  8 + (i < 0 ? 0 : (i + 1) / STAGES.length * 88));
-      },
-    });
+    const result = await pollJob(job.id, { onProgress: stageProgress });
 
     const render = result?.renders?.[0];
     if (!render) {
@@ -199,8 +304,7 @@ async function run() {
     showStage('Done', 100);
     paintResult(render);
   } catch (err) {
-    showStage(err.message, 100);
-    $('#rail-fill').style.background = 'var(--red)';
+    failRun(err);
   } finally {
     $('#go').disabled = false;
   }
@@ -240,6 +344,11 @@ export function init() {
   for (const f of FIELDS) on($(`#i-${f}`), 'change', refreshTreatState);
   on($('#i-key'), 'input', refreshTreatState);
   on($('#go'), 'click', run);
+  on($('#ask-form'), 'submit', submitAnswers);
+  on($('#ask-back'), 'click', () => {
+    $('#ask').hidden = true;
+    $('#slot-vocal').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  });
   on($('#again'), 'click', () => {
     $('#result').hidden = true;
     $('#treatment').open = true;

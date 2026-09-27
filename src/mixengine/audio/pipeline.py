@@ -169,6 +169,20 @@ def render_variant(vocal_audio: np.ndarray, sr: int, vdna: dict,
 
     v = dsp.as_2d(vocal_audio)
 
+    # ── 1b. The performance, not the file ─────────────────────────────────
+    # A take often starts before the performance does: a count-in, a
+    # breath, the noise of the room before the first line. Left in, that
+    # sound is the vocal's "first phrase", the placement lands it on the
+    # drop, and the real first line arrives bars late. The analysis found
+    # where the performance runs; unless the person said to keep the
+    # lead-in, everything outside it is silenced (not cut, so every time
+    # in the DNA still means what it did).
+    v, span_info = _keep_performance(v, sr, vdna.get("performance_span"),
+                                     getattr(intents, "lead_in", None) if intents else None)
+    if span_info:
+        tinfo["performance_span"] = span_info
+        log.info("  performance: %s", span_info.get("note", ""))
+
     # ── 2. Tempo ──────────────────────────────────────────────────────────
     # The matcher's ratio comes from two tempo *estimates*, and the vocal's
     # is the less reliable of the two. Before stretching, check the ratio
@@ -282,9 +296,13 @@ def render_variant(vocal_audio: np.ndarray, sr: int, vdna: dict,
         # A take left at the top of the beat sits inside its intro and the
         # drop arrives mid-verse, so the vocal is moved, whole bars only,
         # to the first section that carries the beat's energy.
-        v, place_info = transform.place_at_section(
-            v, sr, analysis.detect_phrases(v, sr), downbeats_s,
-            bdna.get("sections"))
+        if intents is not None and getattr(intents, "entry", None) == "top":
+            place_info = {"method": "none",
+                          "reason": "asked to come in from the top of the beat"}
+        else:
+            v, place_info = transform.place_at_section(
+                v, sr, analysis.detect_phrases(v, sr), downbeats_s,
+                bdna.get("sections"))
         if place_info.get("method") != "none":
             align_info = dict(align_info)
             align_info["placement"] = place_info
@@ -660,6 +678,53 @@ def _hook_regions(phrases: Sequence[Tuple[int, int]]) -> List[Tuple[int, int]]:
     return list(phrases[len(phrases) // 2:])
 
 
+PERFORMANCE_PAD_S = 0.05     # kept either side of the measured span
+PERFORMANCE_FADE_S = 0.03    # raised-cosine edge into the silence
+
+
+def _keep_performance(v: np.ndarray, sr: int, span: Optional[dict],
+                      lead_in: Optional[str]) -> Tuple[np.ndarray, dict]:
+    """Silence the take outside its performance span, in place of the
+    file's own start and end. Length and every timestamp are preserved.
+
+    `lead_in` is the person's answer: "keep" leaves the take whole,
+    "trim" cuts regardless of what the analysis defaulted to, and no
+    answer follows the analysis' default.
+    """
+    if not span:
+        return v, {}
+    lead = float(span.get("lead_in_s") or 0.0)
+    tail = float(span.get("tail_s") or 0.0)
+    if lead <= 0 and tail <= 0:
+        return v, {}
+    decision = lead_in or span.get("default") or "keep"
+    info = {"lead_in_s": round(lead, 3), "tail_s": round(tail, 3),
+            "decision": decision,
+            "source": "user" if lead_in else "analysis",
+            "reason": span.get("reason", "")}
+    if decision != "trim":
+        info["note"] = "lead-in kept (%s)" % info["source"]
+        return v, info
+    n = v.shape[0]
+    start = int(max(0.0, float(span["start_s"]) - PERFORMANCE_PAD_S) * sr)
+    end = int(min(n / sr, float(span["end_s"]) + PERFORMANCE_PAD_S) * sr)
+    fade = max(1, int(PERFORMANCE_FADE_S * sr))
+    out = v.copy()
+    if lead > 0 and start > 0:
+        out[:start] = 0.0
+        k = min(fade, n - start)
+        ramp = 0.5 - 0.5 * np.cos(np.pi * np.arange(k) / k)
+        out[start:start + k] *= ramp[:, None].astype(out.dtype)
+    if tail > 0 and end < n:
+        out[end:] = 0.0
+        k = min(fade, end)
+        ramp = 0.5 + 0.5 * np.cos(np.pi * np.arange(k) / k)
+        out[end - k:end] *= ramp[:, None].astype(out.dtype)
+    info["note"] = ("silenced %.2f s before the first line and %.2f s after "
+                    "the last (%s)" % (lead, tail, info["source"]))
+    return out, info
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # Full pipeline
 # ═════════════════════════════════════════════════════════════════════════════
@@ -696,6 +761,14 @@ def run(vocal_path: str, catalog: Sequence[dict], out_dir: str,
     if vdna.get("status") != "ok":
         return {"status": "failed", "error": vdna.get("error", "vocal analysis failed"),
                 "vocal_dna": vdna}
+    # What the person said about the take outranks what was measured. A
+    # classifier that lost the voice under noise read a rap take as sung
+    # and tuned it; the answer to "which is it?" is authoritative.
+    said = getattr(intents, "performance", None) if intents else None
+    if said and said != vdna.get("performance_type"):
+        log.info("performance: %s (measured %s, confidence %.2f)", said,
+                 vdna.get("performance_type"), vdna.get("performance_confidence") or 0.0)
+        vdna = dict(vdna, performance_type=said, performance_source="user")
 
     log.info("VOCAL: %s", vdna.get("summary", ""))
 

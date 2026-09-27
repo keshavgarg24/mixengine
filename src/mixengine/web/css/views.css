@@ -255,6 +255,40 @@
 .gates { display: flex; flex-wrap: wrap; gap: var(--s2); margin-bottom: var(--s4); }
 .result-actions { display: flex; gap: var(--s2); }
 
+/* ── Before the render: what the engine asks ─────────────────────── */
+
+.ask {
+  margin-top: var(--s6);
+  padding: var(--s5);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+}
+.ask-head h2 { font-size: var(--fs-xl); margin: 0 0 var(--s1); font-weight: 600; }
+.ask-lead { margin: 0 0 var(--s4); color: var(--ink-2); font-size: var(--fs-md); line-height: 1.6; }
+.ask-list { display: grid; gap: var(--s3); }
+.ask-q {
+  border: 0; margin: 0; padding: var(--s3) var(--s4);
+  border-left: 2px solid var(--line); background: var(--panel-2);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+.ask-q.warn { border-left-color: var(--amber); }
+.ask-q.block { border-left-color: var(--red); }
+.ask-q legend { float: left; width: 100%; padding: 0; margin: 0 0 var(--s2); font-size: var(--fs-md); line-height: 1.6; }
+.ask-q legend + * { clear: both; }
+.ask-opts { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.ask-opt {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: var(--fs-sm); padding: 4px 10px; cursor: pointer;
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel);
+}
+.ask-opt:has(input:checked) { border-color: var(--amber-dim); color: var(--amber); }
+.ask-opt:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ask-opt input { margin: 0; accent-color: var(--amber); }
+.ask-why { margin: var(--s2) 0 0; color: var(--ink-3); font-size: var(--fs-xs); line-height: 1.5; }
+.ask-actions { display: flex; align-items: center; gap: var(--s3); margin-top: var(--s4); }
+.ask-actions .go { width: auto; padding-left: var(--s6); padding-right: var(--s6); }
+
 /* ── Narrow screens ───────────────────────────────────────────────── */
 
 @media (max-width: 680px) {
@@ -262,4 +296,6 @@
   .sources { grid-template-columns: 1fr; }
   .converge { height: 24px; }
   .plan-list li { grid-template-columns: 1fr; gap: 0; }
+  .ask-actions { flex-direction: column; align-items: stretch; }
+  .ask-actions .go { width: 100%; }
 }

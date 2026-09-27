@@ -170,6 +170,21 @@
     </button>
   </section>
 
+  <!-- ── Before it renders ──────────────────────────────────────────── -->
+  <section class="ask" id="ask" hidden aria-live="polite">
+    <div class="ask-head">
+      <h2>Before the render</h2>
+      <p class="ask-lead" id="ask-lead">A few things the engine could not settle from the audio alone.</p>
+    </div>
+    <form id="ask-form" novalidate>
+      <div class="ask-list" id="ask-list"></div>
+      <div class="ask-actions">
+        <button class="go" id="ask-go" type="submit"><span>Make the render</span></button>
+        <button class="btn" id="ask-back" type="button">Change the files</button>
+      </div>
+    </form>
+  </section>
+
   <!-- ── While it runs ──────────────────────────────────────────────── -->
   <section class="run" id="run" hidden aria-live="polite">
     <div class="rail"><div class="rail-fill" id="rail-fill"></div></div>

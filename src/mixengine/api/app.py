@@ -140,9 +140,11 @@ def create_app(data_root: str = "./data") -> FastAPI:
         if dna.get("status") != "ok":
             raise HTTPException(422, dna.get("error") or "vocal analysis failed")
         # Dense per-note and per-onset arrays are not used by the interface.
+        from ..core import questions
         slim = {k: v for k, v in dna.items()
                 if k not in ("notes", "onsets_s", "phrases")}
         slim["path"] = path
+        slim["questions"] = [q.to_dict() for q in questions.questions_for(dna)]
         return slim
 
     @app.post("/api/vocal/match")
@@ -214,10 +216,57 @@ def create_app(data_root: str = "./data") -> FastAPI:
 
     # ── render ────────────────────────────────────────────────────────────
 
+    def _workspace_file(path: str, *subdirs: str) -> str:
+        """A client-supplied path, proven to sit inside the workspace.
+
+        Paths come back from `/api/prepare` and are posted again to
+        `/api/render`; a client can post anything, so the path is only
+        accepted when it resolves inside one of the named upload
+        directories and exists there.
+        """
+        target = os.path.realpath(path)
+        for sub in subdirs:
+            base = os.path.realpath(svc.ws.path(sub))
+            if target.startswith(base + os.sep) and os.path.isfile(target):
+                return target
+        raise HTTPException(400, "%r is not an uploaded file" % os.path.basename(path))
+
+    def _intents(**fields):
+        from ..core.intents import Intents
+        try:
+            return Intents.from_dict(fields)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+
+    @app.post("/api/prepare")
+    def prepare(vocal: Optional[UploadFile] = File(None),
+                beat: Optional[UploadFile] = File(None),
+                vocal_path: Optional[str] = Form(None),
+                beat_path: Optional[str] = Form(None),
+                bpm: Optional[float] = Form(None),
+                key: Optional[str] = Form(None)):
+        """Analyse a vocal and a beat and return what the render would ask.
+
+        The result carries both files' workspace paths, a brief of each
+        analysis, and `questions`: the things the analysis could not
+        settle, each with the engine's default. Answer them as form fields
+        on `/api/render`. Analysis is cached by content, so the render
+        that follows does not repeat it.
+        """
+        intents = _intents(bpm=bpm, key=key)
+        if (vocal is None and not vocal_path) or (beat is None and not beat_path):
+            raise HTTPException(400, "send a vocal and a beat")
+        vpath = _save_upload(vocal, "vocals") if vocal is not None \
+            else _workspace_file(vocal_path or "", "vocals")
+        bpath = _save_upload(beat, "beats") if beat is not None \
+            else _workspace_file(beat_path or "", "beats")
+        return svc.start_prepare(vpath, bpath, intents=intents).to_dict()
+
     @app.post("/api/render")
     def render(vocal: Optional[UploadFile] = File(None),
                beat: Optional[UploadFile] = File(None),
                vocal_path: Optional[str] = Form(None),
+               beat_path: Optional[str] = Form(None),
                beat_ids: str = Form(""),
                variants: int = Form(1),
                bpm: Optional[float] = Form(None),
@@ -229,23 +278,29 @@ def create_app(data_root: str = "./data") -> FastAPI:
                space: Optional[str] = Form(None),
                separate: Optional[str] = Form(None),
                loudness: Optional[str] = Form(None),
-               nudge: Optional[str] = Form(None)):
+               nudge: Optional[str] = Form(None),
+               performance: Optional[str] = Form(None),
+               lead_in: Optional[str] = Form(None),
+               entry: Optional[str] = Form(None),
+               noise: Optional[str] = Form(None)):
         """Render a song.
 
-        Two shapes, because two callers need different things. The
-        dashboard posts both files and whatever the user said about them,
-        and gets one run. The CLI and older clients post a `vocal_path`
-        already on disk plus catalog beat ids.
+        Three shapes, because three callers need different things. The
+        dashboard posts the `vocal_path` and `beat_path` it got back from
+        `/api/prepare` together with its answers, and gets one run. A
+        client that skipped preparing posts both files and whatever the
+        user said about them. The CLI and older clients post a
+        `vocal_path` already on disk plus catalog beat ids.
+
+        A take whose noise the restoration could not remove is rendered
+        only when `noise=accept` says so; otherwise the job fails with the
+        question in its error.
         """
-        from ..core.intents import Intents
-        try:
-            intents = Intents.from_dict({
-                "vocal_state": vocal_state, "relationship": relationship,
-                "tune": tune, "timing": timing, "space": space,
-                "separate": separate, "loudness": loudness, "nudge": nudge,
-                "bpm": bpm, "key": key})
-        except ValueError as e:
-            raise HTTPException(422, str(e))
+        intents = _intents(
+            vocal_state=vocal_state, relationship=relationship, tune=tune,
+            timing=timing, space=space, separate=separate, loudness=loudness,
+            nudge=nudge, bpm=bpm, key=key, performance=performance,
+            lead_in=lead_in, entry=entry, noise=noise)
 
         if vocal is not None and beat is not None:
             job = svc.start_session_render(_save_upload(vocal, "vocals"),
@@ -253,12 +308,18 @@ def create_app(data_root: str = "./data") -> FastAPI:
                                            intents=intents)
             return job.to_dict()
 
+        if vocal_path and beat_path:
+            job = svc.start_session_render(
+                _workspace_file(vocal_path, "vocals"),
+                _workspace_file(beat_path, "beats"), intents=intents)
+            return job.to_dict()
+
         if not vocal_path or not os.path.exists(vocal_path):
             raise HTTPException(400, "send a vocal and a beat, or a "
                                      "vocal_path that exists")
         ids = [b for b in beat_ids.split(",") if b.strip()]
         job = svc.start_render(vocal_path, ids, variants=int(variants),
-                               user_bpm=bpm, user_key=key)
+                               user_bpm=bpm, user_key=key, intents=intents)
         return job.to_dict()
 
     @app.get("/api/jobs")

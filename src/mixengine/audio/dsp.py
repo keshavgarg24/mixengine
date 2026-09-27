@@ -238,6 +238,57 @@ def noise_floor_db(x: np.ndarray, sr: int, percentile: float = 8.0) -> float:
     return float(lin_to_db(np.percentile(r, percentile)))
 
 
+def harmonicity(x: np.ndarray, sr: int, frame: int, hop: int,
+                f0_min: float = 65.0, f0_max: float = 1000.0) -> np.ndarray:
+    """Per-frame periodicity in [0, 1], one value per `hop`.
+
+    The normalised autocorrelation peak inside the voice's pitch-lag
+    range. A voiced frame repeats itself once per period and scores high;
+    hiss, fan noise and a room tone do not repeat and score low. It is
+    the one cheap measurement that tells a loud noise from a loud voice,
+    which a level detector by construction cannot.
+
+    Frames are windowed, so the raw autocorrelation decays with lag and
+    would under-read low voices; dividing by the window's own
+    autocorrelation removes that bias.
+    """
+    mono = to_mono(x).astype(np.float64)
+    if len(mono) < frame or frame < 8:
+        return np.zeros(0, dtype=np.float32)
+    n_frames = 1 + (len(mono) - frame) // hop
+    lag_lo = max(1, int(sr / f0_max))
+    lag_hi = min(frame - 1, int(np.ceil(sr / f0_min)))
+    if lag_hi <= lag_lo:
+        return np.zeros(n_frames, dtype=np.float32)
+
+    win = np.hanning(frame)
+    nfft = 1 << int(np.ceil(np.log2(2 * frame)))
+    win_ac = np.fft.irfft(np.abs(np.fft.rfft(win, n=nfft)) ** 2, n=nfft)[:frame]
+    win_ac = np.maximum(win_ac / max(win_ac[0], EPS), 1e-3)
+
+    out = np.zeros(n_frames, dtype=np.float32)
+    chunk = 1024                       # bounds memory on long takes
+    for start in range(0, n_frames, chunk):
+        stop = min(n_frames, start + chunk)
+        idx = np.arange(frame)[None, :] + hop * np.arange(start, stop)[:, None]
+        frames = mono[idx]
+        frames = (frames - frames.mean(axis=1, keepdims=True)) * win
+        spec = np.fft.rfft(frames, n=nfft, axis=1)
+        ac = np.fft.irfft(np.abs(spec) ** 2, n=nfft, axis=1)[:, :frame]
+        ac = ac / win_ac[None, :]
+        e0 = np.maximum(ac[:, 0], EPS)
+        peak = ac[:, lag_lo:lag_hi + 1].max(axis=1)
+        out[start:stop] = np.clip(peak / e0, 0.0, 1.0)
+    return out
+
+
+def notch(x: np.ndarray, sr: int, freq_hz: float, q: float = 25.0) -> np.ndarray:
+    """Remove one spectral line -- mains hum, a motor whine -- at `freq_hz`."""
+    freq_hz = float(np.clip(freq_hz, 20.0, sr * 0.45))
+    b, a = sps.iirnotch(freq_hz, q, fs=sr)
+    return _sos_apply(sps.tf2sos(b, a), x)
+
+
 def gate(x: np.ndarray, sr: int, threshold_db: float, ratio: float = 4.0,
          attack_ms: float = 2.0, release_ms: float = 120.0,
          floor_db: float = -30.0) -> np.ndarray:

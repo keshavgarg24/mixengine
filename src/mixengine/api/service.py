@@ -311,7 +311,8 @@ class EngineService:
 
     def start_render(self, vocal_path: str, beat_ids: List[str],
                      *, variants: int = 1, user_bpm: Optional[float] = None,
-                     user_key: Optional[str] = None) -> Job:
+                     user_key: Optional[str] = None,
+                     intents: Optional[Any] = None) -> Job:
         job = self._new_job("render")
 
         def work(j: Job) -> dict:
@@ -322,6 +323,7 @@ class EngineService:
                                       user_key=user_key, job=j)
             if vdna.get("status") != "ok":
                 raise RuntimeError(vdna.get("error") or "vocal analysis failed")
+            asked = _ask_before_render(vdna, None, intents)
 
             cat = self.catalog()
             chosen = [b for b in cat if b.get("beat_id") in set(beat_ids)] \
@@ -334,7 +336,8 @@ class EngineService:
             out_dir = self.ws.path("outputs", j.id)
             result = pipeline.run(vocal_path, chosen, out_dir,
                                   n_beats=max(1, len(chosen)),
-                                  variants_per_beat=variants, vdna=vdna)
+                                  variants_per_beat=variants, vdna=vdna,
+                                  intents=intents)
             j.stage, j.progress = "finished", 0.95
 
             for r in result.get("renders", []):
@@ -342,6 +345,7 @@ class EngineService:
                 if p:
                     r["download"] = "/api/audio/%s/%s" % (j.id, os.path.basename(p))
             result["vocal_summary"] = vdna.get("summary")
+            result["questions"] = asked
             return result
 
         return self._run_async(job, work)
@@ -376,6 +380,7 @@ class EngineService:
                                       user_key=user_key, job=j)
             if vdna.get("status") != "ok":
                 raise RuntimeError(vdna.get("error") or "vocal analysis failed")
+            asked = _ask_before_render(vdna, bdna, intents)
 
             j.stage, j.progress, j.message = "transform", 0.4, \
                 "Placing, mixing and mastering"
@@ -391,7 +396,46 @@ class EngineService:
                     r["download"] = "/api/audio/%s/%s" % (j.id,
                                                           os.path.basename(p))
             result["vocal_summary"] = vdna.get("summary")
+            result["questions"] = asked
             return result
+
+        return self._run_async(job, work)
+
+    def start_prepare(self, vocal_path: str, beat_path: str,
+                      *, intents: Optional[Any] = None) -> Job:
+        """Analyse both inputs and say what the render would need to know.
+
+        The step before a render. Both analyses are cached by content, so
+        the render that follows pays nothing for them; what this buys is
+        the chance to ask -- about a lead-in, a doubtful performance type,
+        a take whose noise could not be removed -- before a minute of
+        rendering is spent on the wrong answer.
+        """
+        job = self._new_job("prepare")
+
+        def work(j: Job) -> dict:
+            from ..core import questions
+
+            j.stage, j.progress, j.message = "intake", 0.05, \
+                "Listening to the beat"
+            bdna = self.analyze_beat(beat_path, job=j)
+            if bdna.get("status") != "ok":
+                raise RuntimeError(bdna.get("error") or "beat analysis failed")
+
+            j.stage, j.progress, j.message = "intake", 0.4, \
+                "Listening to the vocal"
+            user_bpm = getattr(intents, "bpm", None) if intents else None
+            user_key = getattr(intents, "key", None) if intents else None
+            vdna = self.analyze_vocal(vocal_path, user_bpm=user_bpm,
+                                      user_key=user_key, job=j)
+            if vdna.get("status") != "ok":
+                raise RuntimeError(vdna.get("error") or "vocal analysis failed")
+
+            j.stage, j.progress = "judge", 0.9
+            asked = [q.to_dict() for q in questions.questions_for(vdna, bdna)]
+            return {"vocal_path": vocal_path, "beat_path": beat_path,
+                    "vocal": _vocal_brief(vdna), "beat": _beat_brief(bdna),
+                    "questions": asked}
 
         return self._run_async(job, work)
 
@@ -495,6 +539,29 @@ class EngineService:
         rep = take_report(frames, scale_midi=scale,
                           noise_floor_db=fa.noise_floor_db)
         return rep.to_dict()
+
+
+def _ask_before_render(vdna: dict, bdna: Optional[dict],
+                       intents: Optional[Any]) -> List[dict]:
+    """The render's questions, and a refusal if one is unanswered and
+    blocking. A severe-noise take is not rendered on nobody's say-so."""
+    from ..core import questions
+    asked = questions.questions_for(vdna, bdna)
+    blocks = questions.unanswered_blocks(asked, intents)
+    if blocks:
+        raise RuntimeError("needs an answer before rendering: %s"
+                           % " / ".join(q.text for q in blocks))
+    return [q.to_dict() for q in asked]
+
+
+def _vocal_brief(vdna: dict) -> dict:
+    """What the interface shows about a take before rendering it."""
+    keep = ("vocal_id", "duration_s", "bpm", "bpm_confidence", "key",
+            "key_confidence", "performance_type", "performance_confidence",
+            "performance_reason", "performance_span", "noise",
+            "noise_floor_db", "restoration", "summary", "warnings",
+            "vocal_state", "conditioned_path")
+    return {k: vdna.get(k) for k in keep if k in vdna}
 
 
 def _beat_brief(bdna: dict) -> dict:

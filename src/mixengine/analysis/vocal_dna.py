@@ -105,6 +105,7 @@ def extract(path: str,
 
     # ── Stage 2: restoration ──────────────────────────────────────────────
     quality_post = audio_io.probe_quality(y, sr, path)
+    noise_in = analysis.noise_verdict(y, sr, analysis.detect_phrases(y, sr))
     y, restore_report = separation.condition_vocal(y, sr, quality_post,
                                                    separated=separated)
     log.info("  restoration: %s", {k: v for k, v in restore_report.items() if v})
@@ -114,6 +115,28 @@ def extract(path: str,
     # lowered by 12 sits inside the quiet syllables and chews them.
     noise_floor_db = float(dsp.noise_floor_db(y, sr))
 
+    # What is left under the voice after restoration is the verdict the
+    # person hears about: a take the chain could make clean needs no
+    # question, one it could not is theirs to re-record or accept.
+    phrases = analysis.detect_phrases(y, sr)
+    noise_out = analysis.noise_verdict(y, sr, phrases)
+    noise = {"verdict": noise_out["verdict"],
+             "snr_db": noise_out["snr_db"],
+             "input_snr_db": noise_in["snr_db"],
+             "input_verdict": noise_in["verdict"],
+             "removed_db": round(noise_out["snr_db"] - noise_in["snr_db"], 1),
+             "gap_fraction": noise_out["gap_fraction"]}
+    log.info("  noise: %s (%.1f dB over the floor; was %s, %.1f dB)",
+             noise["verdict"], noise["snr_db"], noise["input_verdict"],
+             noise["input_snr_db"])
+    if phrases and noise_out["snr_db"] < separation.GAP_GATE_SNR_DB:
+        # The floor that restoration could not remove is silenced where
+        # nothing was performed. Measured floor above stays pre-gate, so
+        # the mixer's expander still works the short gaps inside phrases.
+        y = separation.mute_between_phrases(y, sr, phrases)
+        restore_report["gap_gate"] = True
+        noise["gaps_muted"] = True
+
     if conditioned_out:
         audio_io.save(conditioned_out, y, sr)
 
@@ -121,8 +144,23 @@ def extract(path: str,
 
     # ── Stage 3: symbolic analysis ────────────────────────────────────────
     pitch = analysis.track_pitch(y, sr)
-    phrases = analysis.detect_phrases(y, sr)
     onsets = analysis.detect_onsets(y, sr)
+    # Syllables are counted where the voice is, over the time it sounds.
+    # Onsets the detector fires in the gaps of a noisy take are not
+    # syllables, and a take that is a third silence is not a slow one.
+    active_s = sum(e - s for s, e in phrases) / sr if phrases else duration
+    if phrases and onsets.size:
+        starts = np.array([s / sr for s, _ in phrases])
+        ends = np.array([e / sr for _, e in phrases])
+        inside = ((onsets[:, None] >= starts[None, :])
+                  & (onsets[:, None] <= ends[None, :])).any(axis=1)
+        onsets = onsets[inside]
+    harmonicity = analysis.phrase_harmonicity(y, sr, phrases)
+    span = analysis.performance_span(phrases, sr, duration, harmonicity)
+    if span["lead_in_s"] or span["tail_s"]:
+        log.info("  performance %.2f-%.2fs; lead-in %.1fs, tail %.1fs -> %s (%s)",
+                 span["start_s"], span["end_s"], span["lead_in_s"],
+                 span["tail_s"], span["default"], span["reason"])
 
     notes = pitch.notes or []
     midis = [n["midi"] for n in notes]
@@ -145,6 +183,18 @@ def extract(path: str,
     bpm_det, bpm_conf, bpm_alts = tempo["bpm"], tempo["confidence"], tempo["alternates"]
     tempo_verification: Optional[dict] = None
     extra_warnings: List[str] = []
+    if noise["verdict"] == "severe":
+        extra_warnings.append(
+            "background noise is nearly as loud as the voice (%.0f dB under "
+            "it after restoration); it will be heard in the render -- a "
+            "cleaner take is the fix" % noise["snr_db"])
+    elif noise["verdict"] == "heavy":
+        extra_warnings.append(
+            "heavy background noise: restoration took it down but some "
+            "remains under the words (%.0f dB under the voice)"
+            % noise["snr_db"])
+    if span["default"] == "trim":
+        extra_warnings.append("lead-in cut by default: %s" % span["reason"])
 
     ref_bpm = float((reference_beat_dna or {}).get("bpm") or 0.0)
     if ref_bpm > 0:
@@ -184,7 +234,8 @@ def extract(path: str,
         log.info("  no stable tempo detected -- phrase-anchored placement "
                  "will be used instead of grid-locked stretching")
 
-    performance = analysis.classify_performance(pitch, onsets, duration)
+    performance, performance_conf, performance_reason = \
+        analysis.classify_performance_ex(pitch, onsets, active_s)
 
     # ── Stage 4: descriptive features ─────────────────────────────────────
     voiced_f0 = pitch.f0[pitch.voiced] if pitch.voiced.size else np.array([])
@@ -201,7 +252,7 @@ def extract(path: str,
     active_lufs = audio_io.loudness_region_lufs(y, sr, phrases)
     sibilance = _sibilance_ratio(y, sr)
     resonances = dsp.find_resonances(y, sr, n=3)
-    syllable_rate = len(onsets) / duration if duration > 0 else 0.0
+    syllable_rate = len(onsets) / active_s if active_s > 0 else 0.0
 
     tuning_dev = ([abs(n["cents_dev"]) for n in notes] if notes else [])
     in_key_frac = 0.0
@@ -249,7 +300,11 @@ def extract(path: str,
         "bpm_verification": tempo_verification,
 
         "performance_type": performance,
+        "performance_confidence": round(float(performance_conf), 2),
+        "performance_reason": performance_reason,
         "syllable_rate": round(float(syllable_rate), 2),
+        "performance_span": span,
+        "noise": noise,
 
         # -- Symbolic -----------------------------------------------------
         "duration_s": round(duration, 2),
@@ -454,6 +509,10 @@ def can_improve(doc: Optional[dict],
     cond = doc.get("conditioned_path")
     if not cond or not os.path.exists(cond):
         return "restored take is not on disk"
+    # The noise verdict and the performance span decide what the person
+    # is asked before a render; a document without them cannot ask.
+    if "noise" not in doc or "performance_span" not in doc:
+        return "analysed before the take was judged for noise and lead-in"
     return improvement_over(doc.get("analysis_backends"),
                             want_separation=bool(doc.get("needs_separation")),
                             now=now)

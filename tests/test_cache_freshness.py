@@ -21,6 +21,9 @@ from mixengine.core.capabilities import CAPS, improvement_over          # noqa: 
 BASIC = {"rhythm": "librosa", "pitch": "pyin", "separation": "none"}
 FULL = {"rhythm": "madmom", "pitch": "torchcrepe", "separation": "demucs"}
 
+# What a take analysed today carries: the judgement the questions read.
+JUDGED = {"noise": {"verdict": "clean"}, "performance_span": {}}
+
 
 class TestImprovementOver(unittest.TestCase):
 
@@ -68,11 +71,20 @@ class TestDocumentWrappers(unittest.TestCase):
     def test_vocal_wrapper_reads_whether_the_take_needed_separation(self):
         now = {**BASIC, "separation": "demucs"}
         clean = {"status": "ok", "needs_separation": False, "analysis_backends": BASIC,
-                 "conditioned_path": __file__}
+                 "conditioned_path": __file__, **JUDGED}
         mixture = {"status": "ok", "needs_separation": True, "analysis_backends": BASIC,
-                   "conditioned_path": __file__}
+                   "conditioned_path": __file__, **JUDGED}
         self.assertIsNone(vocal_dna.can_improve(clean, now=now))
         self.assertTrue(vocal_dna.can_improve(mixture, now=now))
+
+    def test_a_vocal_never_judged_for_noise_is_analysed_again(self):
+        """The noise verdict and the performance span are what the person
+        is asked about before a render; a document from before they
+        existed cannot ask, so it is analysed once more."""
+        doc = {"status": "ok", "needs_separation": False, "analysis_backends": BASIC,
+               "conditioned_path": __file__}
+        self.assertIn("judged", vocal_dna.can_improve(doc, now=BASIC))
+        self.assertIsNone(vocal_dna.can_improve({**doc, **JUDGED}, now=BASIC))
 
     def test_a_vocal_whose_restored_take_is_gone_is_analysed_again(self):
         """The render reads the restored take from the cached path; an

@@ -997,6 +997,166 @@ def _close_gaps(mask: np.ndarray, max_gap: int) -> np.ndarray:
     return m
 
 
+# A take is not all performance. Phrases closer than this belong to one
+# run; the performance is the first run at least LEAD_IN_MIN_RUN_S long,
+# and whatever sits before it (a count-in, talk, the noise of a recorder
+# being started) is the lead-in. A lead-in carrying more than
+# LEAD_IN_MAX_FRACTION of the take's active time is kept: that much sound
+# is material, not a lead-in.
+LEAD_IN_RUN_GAP_S = 2.0
+LEAD_IN_MIN_RUN_S = 6.0
+LEAD_IN_MAX_FRACTION = 0.25
+LEAD_IN_ISOLATION_S = 3.0
+LEAD_IN_HARMONICITY_RATIO = 0.8
+
+
+def phrase_harmonicity(y: np.ndarray, sr: int,
+                       phrases: List[Tuple[int, int]]) -> List[float]:
+    """Median periodicity per phrase, 0 (noise) to 1 (a clean voice)."""
+    if not phrases:
+        return []
+    frame, hop = int(0.040 * sr), int(0.010 * sr)
+    h = dsp.harmonicity(y, sr, frame, hop)
+    out = []
+    for s, e in phrases:
+        a, b = s // hop, max(s // hop + 1, e // hop)
+        seg = h[a:b]
+        out.append(float(np.median(seg)) if seg.size else 0.0)
+    return out
+
+
+def performance_span(phrases: List[Tuple[int, int]], sr: int,
+                     duration_s: float,
+                     harmonicity: Optional[List[float]] = None) -> dict:
+    """Where the performance sits inside the take.
+
+    A phone take of a rap started ten seconds before the first line, and
+    those ten seconds -- a loud blob of the recorder's own noise -- were as
+    loud as the voice. The phrase detector, which knows only level, called
+    them a phrase; placement then put that blob on the beat's drop and the
+    verse arrived seven bars late. Level cannot settle what is performance
+    and what is lead-in; timing can. Lines of a verse come a breath apart,
+    a lead-in sits alone before the first of them.
+
+    Returns start/end in seconds, the lead-in and tail lengths, and a
+    default -- "trim" or "keep" -- with the reason for it. The person who
+    made the recording is asked either way; this is the answer if they
+    say nothing.
+    """
+    ph = [(s / sr, e / sr) for s, e in phrases]
+    total_active = sum(e - s for s, e in ph)
+    out = {"start_s": 0.0, "end_s": round(float(duration_s), 3),
+           "lead_in_s": 0.0, "tail_s": 0.0, "default": "keep",
+           "reason": "no lead-in"}
+    if len(ph) < 2 or total_active <= 0:
+        return out
+
+    # Group phrases into runs.
+    runs: List[List[int]] = [[0]]
+    for i in range(1, len(ph)):
+        if ph[i][0] - ph[i - 1][1] < LEAD_IN_RUN_GAP_S:
+            runs[-1].append(i)
+        else:
+            runs.append([i])
+    span_of = lambda run: ph[run[-1]][1] - ph[run[0]][0]        # noqa: E731
+    long_runs = [r for r in runs if span_of(r) >= LEAD_IN_MIN_RUN_S]
+    if not long_runs:
+        long_runs = [max(runs, key=span_of)]
+    first, last = long_runs[0][0], long_runs[-1][-1]
+    start_s, end_s = ph[first][0], ph[last][1]
+
+    lead = list(range(first))
+    tail = list(range(last + 1, len(ph)))
+    lead_active = sum(ph[i][1] - ph[i][0] for i in lead)
+    tail_active = sum(ph[i][1] - ph[i][0] for i in tail)
+    out.update({"start_s": round(start_s, 3), "end_s": round(end_s, 3),
+                "lead_in_s": round(lead_active, 3),
+                "tail_s": round(tail_active, 3)})
+    if not lead and not tail:
+        return out
+
+    fraction = (lead_active + tail_active) / total_active
+    if fraction >= LEAD_IN_MAX_FRACTION:
+        out["reason"] = ("%.0f%% of the take's sound sits outside the main "
+                         "run; that is material, not a lead-in"
+                         % (fraction * 100))
+        return out
+
+    gap = ph[first][0] - ph[first - 1][1] if lead else float("inf")
+    voice_like = True
+    if harmonicity and len(harmonicity) == len(ph) and lead:
+        perf_h = float(np.median([harmonicity[i]
+                                  for i in range(first, last + 1)]))
+        lead_h = float(np.median([harmonicity[i] for i in lead]))
+        voice_like = lead_h >= LEAD_IN_HARMONICITY_RATIO * perf_h
+        out["lead_in_harmonicity"] = round(lead_h, 3)
+        out["performance_harmonicity"] = round(perf_h, 3)
+
+    if lead and (not voice_like or gap >= LEAD_IN_ISOLATION_S):
+        out["default"] = "trim"
+        what = "a voice" if voice_like else "noise, not a voice"
+        out["reason"] = ("%.1f s of sound before the first line (%s), "
+                         "separated from it by %.1f s"
+                         % (lead_active, what, gap))
+    elif lead:
+        out["reason"] = ("%.1f s of voice before the first line, only "
+                         "%.1f s ahead of it -- kept unless you say otherwise"
+                         % (lead_active, gap))
+    else:
+        out["default"] = "trim"
+        out["reason"] = ("%.1f s of sound after the last line, %.1f s "
+                         "behind it" % (tail_active, ph[last + 1][0] - end_s))
+    return out
+
+
+NOISE_VERDICTS = (("clean", 30.0), ("light", 20.0), ("heavy", 14.0),
+                  ("severe", -np.inf))
+
+
+def noise_verdict(y: np.ndarray, sr: int,
+                  phrases: List[Tuple[int, int]]) -> dict:
+    """How far the voice clears what is under it, and a word for it.
+
+    `snr_db` is the median level of the frames inside phrases over the
+    median level of the frames between them. The whole-file measure the
+    quality probe reports (RMS over the 8th-percentile frame) reads a
+    take whose noise never stops as merely quiet, because the quietest
+    frames are still noise; this one asks how much louder the words are
+    than the gaps, which is what a listener hears.
+
+    Verdicts: clean (>= 30 dB), light (>= 20), heavy (>= 14), severe.
+    A severe take cannot be made clean -- the separator and subtraction
+    together buy about 12 dB -- and the person is told so.
+    """
+    mono = dsp.to_mono(y)
+    frame, hop = int(0.025 * sr), int(0.010 * sr)
+    r_db = dsp.lin_to_db(dsp.frame_rms(mono, frame, hop))
+    out = {"snr_db": 0.0, "verdict": "severe", "active_db": None,
+           "floor_db": None, "gap_fraction": 0.0}
+    if r_db.size < 8:
+        return out
+    mask = np.zeros(r_db.size, dtype=bool)
+    for s, e in phrases:
+        mask[s // hop: max(s // hop + 1, e // hop)] = True
+    if mask.sum() < 4 or (~mask).sum() < 4:
+        # No gaps found at all: the noise never stops or the take has no
+        # phrases. Fall back to the spread of the level distribution.
+        active_db = float(np.percentile(r_db, 85))
+        floor_db = float(np.percentile(r_db, 15))
+    else:
+        active_db = float(np.median(r_db[mask]))
+        floor_db = float(np.median(r_db[~mask]))
+    snr = active_db - floor_db
+    out.update({"snr_db": round(snr, 1), "active_db": round(active_db, 1),
+                "floor_db": round(floor_db, 1),
+                "gap_fraction": round(float((~mask).mean()), 3)})
+    for name, floor in NOISE_VERDICTS:
+        if snr >= floor:
+            out["verdict"] = name
+            break
+    return out
+
+
 def detect_onsets(y: np.ndarray, sr: int) -> np.ndarray:
     """Syllable-level onsets, in seconds."""
     import librosa
@@ -1299,35 +1459,50 @@ def verify_tempo(onsets: FloatSeq, detected_bpm: float,
     return float(best_bpm), best_src, float(best_err)
 
 
-def classify_performance(pitch: PitchResult, onsets: np.ndarray,
-                         duration_s: float) -> str:
-    """rap | melodic_rap | sung | spoken.
+def classify_performance_ex(pitch: PitchResult, onsets: np.ndarray,
+                            duration_s: float) -> Tuple[str, float, str]:
+    """rap | melodic_rap | sung | spoken, with a confidence and the reason.
 
     Drives materially different treatment: rap gets timing quantisation and
     no tuning; sung gets tuning and gentler timing. Applying a singer's
     chain to a rapper is one of the more audible ways to get this wrong.
+
+    `duration_s` should be the time the voice is actually sounding, not
+    the file length: a take that is a third silence read at two syllables
+    a second and was called sung. A take with no pitched notes at all is
+    not sung either -- it is rap or speech, or the tracker lost the voice
+    under noise -- and the low confidence says which questions to ask.
     """
     if duration_s <= 0:
-        return "sung"
+        return "sung", 0.0, "no audio"
     syllable_rate = len(onsets) / duration_s
-
     notes = pitch.notes or []
     if not notes:
-        return "spoken" if syllable_rate > 3.0 else "sung"
+        label = "rap" if syllable_rate >= 2.0 else "spoken"
+        return label, 0.3, ("no sustained pitch found; %.1f syllables a "
+                            "second" % syllable_rate)
 
     durations = np.array([n["duration"] for n in notes])
     median_note = float(np.median(durations)) if durations.size else 0.0
     midis = np.array([n["midi"] for n in notes])
     pitch_spread = float(np.std(midis)) if midis.size > 1 else 0.0
     sustained = float(np.mean(durations > 0.30)) if durations.size else 0.0
+    facts = ("%.1f syllables a second, notes %.0f ms long, %.0f%% held"
+             % (syllable_rate, median_note * 1000, sustained * 100))
 
     if syllable_rate > 3.6 and median_note < 0.16:
-        return "rap" if pitch_spread < 2.6 else "melodic_rap"
+        return ("rap" if pitch_spread < 2.6 else "melodic_rap"), 0.85, facts
     if sustained > 0.34 and pitch_spread > 2.0:
-        return "sung"
+        return "sung", 0.85, facts
     if syllable_rate > 2.6:
-        return "melodic_rap"
-    return "sung"
+        return "melodic_rap", 0.5, facts
+    return "sung", 0.45, facts
+
+
+def classify_performance(pitch: PitchResult, onsets: np.ndarray,
+                         duration_s: float) -> str:
+    """rap | melodic_rap | sung | spoken. See `classify_performance_ex`."""
+    return classify_performance_ex(pitch, onsets, duration_s)[0]
 
 
 # ═════════════════════════════════════════════════════════════════════════════
