@@ -252,6 +252,33 @@ def plan_pitch_shift(semitones: int, has_stems: bool) -> dict:
 # Alignment
 # ─────────────────────────────────────────────────────────────────────────────
 
+# A measured tempo within this of the beat's is the same tempo. Stretching
+# by less than this trades nothing audible for phase-vocoder artefacts.
+GRID_TEMPO_TOLERANCE = 0.001
+
+
+def grid_tempo_ratio(vocal_ones: Optional[np.ndarray], beat_bar_s: float
+                     ) -> Optional[float]:
+    """The vocal's tempo relative to the beat's, from its own bar-ones.
+
+    A line fitted through forty bar-ones measures the bar to a fraction
+    of a millisecond; a tempo histogram over the same take read 198.77
+    against a true 200, and the 0.6% stretch built on it sped up a vocal
+    that was already exactly in tempo, then drifted 641 ms that a later
+    stage had to remove. Returns vocal_bar / beat_bar -- the factor by
+    which the vocal is *longer* than the beat per bar -- or None when
+    there are too few bars to fit.
+    """
+    if vocal_ones is None or vocal_ones.size < 8 or beat_bar_s <= 0:
+        return None
+    k = np.arange(vocal_ones.size, dtype=np.float64)
+    slope = float(np.polyfit(k, np.asarray(vocal_ones, dtype=np.float64),
+                             1)[0])
+    if slope <= 0:
+        return None
+    return slope / beat_bar_s
+
+
 # Below this share of the vocal's bar-ones landing on the beat's, the
 # vocal's own grid is not trusted for placement and the phrase-start
 # scoring decides instead.
@@ -386,7 +413,9 @@ def align_to_downbeat(vocal: np.ndarray, sr: int,
                       phrases_samples: Sequence[Tuple[int, int]],
                       downbeats_s: np.ndarray,
                       beats_s: Optional[np.ndarray] = None,
-                      allow_beat_level: bool = True) -> Tuple[np.ndarray, dict]:
+                      allow_beat_level: bool = True,
+                      vocal_ones: Optional[np.ndarray] = None
+                      ) -> Tuple[np.ndarray, dict]:
     """Shift the vocal so its first phrase begins on a bar line.
 
     The original engine aligned the first detected vocal onset to the first
@@ -419,7 +448,8 @@ def align_to_downbeat(vocal: np.ndarray, sr: int,
     # Preferred: lay the vocal's own bar grid over the beat's. Each signal
     # is tracked on its own, so the two never have to share content --
     # which is why every cross-correlation between them found nothing.
-    ones = vocal_downbeats(vocal, sr, bar_s) if bar_s > 0 else None
+    ones = (vocal_ones if vocal_ones is not None
+            else (vocal_downbeats(vocal, sr, bar_s) if bar_s > 0 else None))
     shift, conf = (_grid_alignment(ones, grid, bar_s)
                    if ones is not None else (0.0, 0.0))
     if ones is not None and conf >= VOCAL_GRID_CONFIDENCE:

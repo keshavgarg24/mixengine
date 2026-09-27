@@ -133,3 +133,33 @@ class TestGridAlignmentOnAudio(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGridTempoRatio(unittest.TestCase):
+    """The stretch ratio from the vocal's own bars, not a tempo histogram."""
+
+    def test_same_tempo_is_ratio_one(self):
+        ones = np.arange(0.0, 100.0, BAR)
+        r = transform.grid_tempo_ratio(ones, BAR)
+        self.assertIsNotNone(r)
+        self.assertAlmostEqual(r, 1.0, places=5)
+
+    def test_a_slow_vocal_reads_above_one(self):
+        """Bars 1% longer than the beat's -> ratio 1.01, i.e. the vocal
+        must be shortened by that factor to match."""
+        ones = np.arange(0.0, 100.0, BAR * 1.01)
+        r = transform.grid_tempo_ratio(ones, BAR)
+        self.assertAlmostEqual(r, 1.01, places=4)
+
+    def test_jitter_does_not_bias_the_fit(self):
+        """Per-bar jitter of +/-30 ms averages out over forty bars; a
+        median-of-diffs would not, and a histogram certainly did not."""
+        rng = np.random.default_rng(5)
+        ones = np.arange(0.0, 100.0, BAR) + rng.uniform(-0.03, 0.03, 42)
+        r = transform.grid_tempo_ratio(ones, BAR)
+        self.assertAlmostEqual(r, 1.0, places=3)
+
+    def test_too_few_bars_is_none(self):
+        self.assertIsNone(transform.grid_tempo_ratio(np.arange(0.0, 10.0, BAR),
+                                                     BAR))
+        self.assertIsNone(transform.grid_tempo_ratio(None, BAR))

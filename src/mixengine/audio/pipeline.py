@@ -176,8 +176,42 @@ def render_variant(vocal_audio: np.ndarray, sr: int, vdna: dict,
     # grid better than stretching does, the detected tempo was wrong and the
     # stretch would introduce the very misalignment it claims to fix.
     ratio = float(match.tempo_ratio)
+
+    # Measure the vocal's tempo from its own bar grid before trusting the
+    # matcher's estimate. Forty bar-ones fix the bar to a fraction of a
+    # millisecond; the tempo histogram behind the matcher's ratio read a
+    # 100 BPM take as 99.4 and the resulting stretch sped it up 0.6%,
+    # manufacturing 641 ms of drift for a later stage to chase.
+    vocal_ones = None
+    beat_bar_s = (float(np.median(np.diff(downbeats_s)))
+                  if len(downbeats_s) >= 2 else 0.0)
+    if beat_bar_s > 0 and (render_plan is None
+                           or render_plan.alignment.method != "single_offset"):
+        ones = transform.vocal_downbeats(v, sr, beat_bar_s)
+        grid_ratio = (transform.grid_tempo_ratio(ones, beat_bar_s)
+                      if ones is not None else None)
+        if ones is not None and grid_ratio is not None:
+            measured = 1.0 / grid_ratio          # beat bar / vocal bar
+            if abs(grid_ratio - 1.0) <= transform.GRID_TEMPO_TOLERANCE:
+                measured = 1.0
+            log.info("  tempo: vocal bar %.4fs over %d bars -> ratio %.5f "
+                     "(matcher said %.5f)", beat_bar_s * grid_ratio,
+                     ones.size, measured, ratio)
+            tinfo["tempo_from_grid"] = {
+                "vocal_bars": int(ones.size),
+                "vocal_bar_s": round(beat_bar_s * grid_ratio, 4),
+                "ratio": round(measured, 5),
+                "matcher_ratio": round(ratio, 5)}
+            ratio = measured
+            # The grid is measured on the unstretched take; scale it to
+            # where the bar-ones will land after the stretch.
+            vocal_ones = ones if measured == 1.0 else ones * (1.0 / measured)
+        else:
+            vocal_ones = ones
+
     onsets_pre = analysis.detect_onsets(v, sr)
-    if abs(ratio - 1.0) > 0.002 and len(onsets_pre) >= 6:
+    if abs(ratio - 1.0) > 0.002 and len(onsets_pre) >= 6 \
+            and "tempo_from_grid" not in tinfo:
         # Score against the beat's *measured* subdivision grid, not a grid
         # generated from its tempo. A fraction of a BPM of tracker error
         # accumulates enough phase over half a minute to invert this
@@ -235,7 +269,7 @@ def render_variant(vocal_audio: np.ndarray, sr: int, vdna: dict,
         log.info("  placement: %s", render_plan.alignment.reason)
     else:
         v, align_info = transform.align_to_downbeat(
-            v, sr, phrases, downbeats_s, beats_s)
+            v, sr, phrases, downbeats_s, beats_s, vocal_ones=vocal_ones)
 
     # A nudge the user asked for, in beats of this beat's own tempo.
     # Where a vocal's bars sit against a beat it was never recorded to is
@@ -701,7 +735,7 @@ def run(vocal_path: str, catalog: Sequence[dict], out_dir: str,
 
         # What may this render touch? Decided once, from the audio and
         # the user's stated intents, before any stage runs.
-        render_plan = _build_plan(vocal_audio, beat_audio, sr, vdna, bdna,
+        render_plan = _build_plan(vocal_audio, beat_audio, SR, vdna, bdna,
                                   intents)
 
         for variant in variants:
