@@ -204,8 +204,28 @@ def cmd_render(args) -> int:
         n_beats=args.beats, variants_per_beat=args.variants,
         user_bpm=args.bpm, user_key=args.key,
         beat_ids=args.beat_id,
-        intents=Intents.from_dict({"bpm": args.bpm, "key": args.key,
-                                   "nudge": getattr(args, "nudge", None)}))
+        intents=Intents.from_dict({
+            "bpm": args.bpm, "key": args.key,
+            "nudge": getattr(args, "nudge", None),
+            "performance": getattr(args, "performance", None),
+            "lead_in": getattr(args, "lead_in", None),
+            "entry": getattr(args, "entry", None),
+            "noise": getattr(args, "noise", None),
+            "length": getattr(args, "length", None)}))
+
+    if out["status"] == "needs_answers":
+        # The dashboard puts these as questions with the engine's own
+        # default preselected. Here they are flags, so say which one.
+        print("\nThis take is not rendered until you answer:")
+        for q in out.get("questions") or []:
+            print("\n  %s" % q["text"])
+            if q.get("reason"):
+                print("  (%s)" % q["reason"])
+            for opt in q["options"]:
+                print("    --%-12s %-10s %s"
+                      % (q["intent"].replace("_", "-"), opt["value"],
+                         opt["label"]))
+        return 1
 
     if out["status"] != "ok":
         print(f"\n{out.get('message') or out.get('error')}")
@@ -307,6 +327,23 @@ def main(argv=None) -> int:
                          "Where a vocal's bars sit against a beat it was "
                          "not recorded to is genuinely ambiguous; this is "
                          "the last word.")
+    # The answers the dashboard collects as questions. Without these a
+    # take the analysis blocked could not be rendered from here at all.
+    rd.add_argument("--performance", default=None,
+                    choices=("rap", "melodic_rap", "sung", "spoken"),
+                    help="what the take is, when the classifier was unsure")
+    rd.add_argument("--lead-in", default=None, choices=("trim", "keep"),
+                    dest="lead_in",
+                    help="cut or keep the sound before the first line")
+    rd.add_argument("--entry", default=None, choices=("section", "top"),
+                    help="bring the vocal in at the beat's first section or "
+                         "at the top of the file")
+    rd.add_argument("--noise", default=None, choices=("accept", "rerecord"),
+                    help="accept: render a take whose noise could not be "
+                         "removed")
+    rd.add_argument("--length", default=None, choices=("accept", "rerecord"),
+                    help="accept: render a take too short to build a song "
+                         "from")
     rd.set_defaults(func=cmd_render)
 
     sv = sub.add_parser("serve", help="run the local web interface")

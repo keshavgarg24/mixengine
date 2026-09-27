@@ -1613,9 +1613,14 @@ def _fallback_sections(y: np.ndarray, sr: int, downbeats: np.ndarray) -> List[di
     block = bar * 8
     out, t, i = [], 0.0, 0
     while t < dur:
+        end = min(t + block, dur)
+        # The last block is cut short by the end of the file, and its bar
+        # count has to be cut with it: a three-second beat was described as
+        # eight bars long because only the times were clipped.
+        bars = max(1, min(8, int(round((end - t) / bar)))) if bar > 0 else 8
         out.append({
-            "start": round(t, 3), "end": round(min(t + block, dur), 3),
-            "start_bar": i * 8, "end_bar": (i + 1) * 8,
+            "start": round(t, 3), "end": round(end, 3),
+            "start_bar": i * 8, "end_bar": i * 8 + bars,
             "energy": 0.5, "label": "section",
         })
         t += block

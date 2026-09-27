@@ -308,6 +308,37 @@ if __name__ == "__main__":
 from mixengine.analysis import analysis                                # noqa: E402
 
 
+class TestFallbackSections(unittest.TestCase):
+    """The terminal rung of the structure ladder: fixed 8-bar blocks.
+
+    Only the times used to be clipped at the end of the file, so a beat
+    three seconds long was described as an eight-bar section.
+    """
+
+    def sections(self, duration_s, bar=2.5):
+        y = np.zeros(int(duration_s * 8000), dtype=np.float32)
+        downbeats = np.arange(0.0, duration_s, bar)
+        return analysis._fallback_sections(y, 8000, downbeats)
+
+    def test_a_beat_shorter_than_a_block_claims_only_the_bars_it_has(self):
+        (only,) = self.sections(3.0)
+        self.assertEqual((only["start_bar"], only["end_bar"]), (0, 1))
+        self.assertEqual(only["end"], 3.0)
+
+    def test_whole_blocks_are_eight_bars_as_before(self):
+        secs = self.sections(40.0)
+        self.assertEqual([(s["start_bar"], s["end_bar"]) for s in secs[:2]],
+                         [(0, 8), (8, 16)])
+
+    def test_every_block_claims_the_bars_its_audio_covers(self):
+        for duration in (3.0, 17.5, 40.0, 63.0):
+            for s in self.sections(duration):
+                self.assertAlmostEqual((s["end_bar"] - s["start_bar"]) * 2.5,
+                                       s["end"] - s["start"], delta=1.3,
+                                       msg="%.1f s file, section %r"
+                                           % (duration, s))
+
+
 class TestTempoAgreement(unittest.TestCase):
     """Two independent estimators; their agreement is the confidence."""
 

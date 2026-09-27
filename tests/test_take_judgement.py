@@ -371,6 +371,44 @@ class TestIntentAnswers(unittest.TestCase):
                 Intents.from_dict({q.intent: option["value"]})
 
 
+class TestRenderGate(unittest.TestCase):
+    """The block is enforced in the pipeline, not in one interface.
+
+    The dashboard asks its questions before it starts a job. The CLI has
+    only flags, asked nothing, and so rendered a take the analysis had
+    said not to render. Whether a take should be rendered is a property of
+    the take.
+    """
+
+    BLOCKED = {"status": "ok", "duration_s": 1.5, "summary": "a fragment",
+               "noise": {"verdict": "severe", "snr_db": 10.0,
+                         "input_snr_db": 6.0}}
+
+    def run_with(self, intents):
+        import tempfile
+        with tempfile.TemporaryDirectory() as out_dir:
+            return pipeline.run("unused.wav", [], out_dir, vdna=self.BLOCKED,
+                                intents=intents)
+
+    def test_a_caller_that_asked_nothing_gets_the_questions_not_a_render(self):
+        out = self.run_with(Intents.AUTO)
+        self.assertEqual(out["status"], "needs_answers")
+        self.assertEqual(sorted(q["id"] for q in out["questions"]),
+                         ["length", "noise"])
+        self.assertEqual(out["renders"], [])
+        self.assertIn("1.5 s", out["message"])
+
+    def test_answering_both_lets_the_render_start(self):
+        out = self.run_with(Intents.from_dict({"length": "accept",
+                                               "noise": "accept"}))
+        self.assertNotEqual(out["status"], "needs_answers")
+
+    def test_a_refusal_is_not_an_answer(self):
+        out = self.run_with(Intents.from_dict({"length": "rerecord",
+                                               "noise": "rerecord"}))
+        self.assertEqual(out["status"], "needs_answers")
+
+
 class TestKeepPerformance(unittest.TestCase):
 
     SPAN = {"start_s": 4.0, "end_s": 9.0, "lead_in_s": 4.0, "tail_s": 1.0,

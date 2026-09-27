@@ -315,9 +315,15 @@ def create_app(data_root: str = "./data") -> FastAPI:
                 _workspace_file(beat_path, "beats"), intents=intents)
             return job.to_dict()
 
-        if not vocal_path or not os.path.exists(vocal_path):
+        if not vocal_path:
             raise HTTPException(400, "send a vocal and a beat, or a "
-                                     "vocal_path that exists")
+                                     "vocal_path and beat_ids")
+        # The same check the other two shapes make. Taking any path that
+        # exists let a caller name a file anywhere on the machine and have
+        # it analysed, and its audio rendered into a file the server then
+        # serves back. Every caller of this shape posts a path this server
+        # handed it from an upload, so all of them stay inside `vocals/`.
+        vocal_path = _workspace_file(vocal_path, "vocals")
         ids = [b for b in beat_ids.split(",") if b.strip()]
         job = svc.start_render(vocal_path, ids, variants=int(variants),
                                user_bpm=bpm, user_key=key, intents=intents)

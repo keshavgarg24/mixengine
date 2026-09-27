@@ -24,7 +24,7 @@ import numpy as np
 from .. import align, arrange
 from ..analysis import analysis, matching, vocal_dna
 from ..arrange import automation
-from ..core import audio_io
+from ..core import audio_io, questions as questions_mod
 from . import (critic, dsp, master, mixer, separation, space, timing,
                transform, tuning)
 from ..core.capabilities import CAPS, require_render
@@ -769,6 +769,20 @@ def run(vocal_path: str, catalog: Sequence[dict], out_dir: str,
         log.info("performance: %s (measured %s, confidence %.2f)", said,
                  vdna.get("performance_type"), vdna.get("performance_confidence") or 0.0)
         vdna = dict(vdna, performance_type=said, performance_source="user")
+
+    # The take's judgement is enforced here because every caller passes
+    # through here. The API asks its questions before it starts a job; the
+    # CLI has only flags and asked nothing, so a severe-noise take and a
+    # take too short to be a song rendered straight through it. Whether a
+    # take should be rendered is a property of the take, not of the
+    # interface that submitted it.
+    blocking = questions_mod.unanswered_blocks(
+        questions_mod.questions_for(vdna), intents)
+    if blocking:
+        return {"status": "needs_answers", "vocal_dna": vdna,
+                "questions": [q.to_dict() for q in blocking],
+                "message": " / ".join(q.text for q in blocking),
+                "renders": []}
 
     log.info("VOCAL: %s", vdna.get("summary", ""))
 
