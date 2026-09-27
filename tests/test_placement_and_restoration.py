@@ -93,16 +93,49 @@ class TestPlaceAtSection(unittest.TestCase):
         self.assertEqual(len(v), 20 * SR)
 
     def test_leading_silence_is_trimmed_to_reach_the_drop(self):
+        """The first line sits 1.3 s into its bar (30.1 s on a 2.4 s grid).
+        It lands inside the drop's bar, 1.3 s after 9.6 s: eight bars back,
+        not the nine that would start it 1.1 s before the drop."""
         secs = _sections((0.0, 9.6, "intro"), (9.6, 60.0, "chorus"))
         first = int(30.1 * SR)
         v, info = transform.place_at_section(self.vocal(40), SR, [(first, first + 900)],
                                              self.grid, secs)
-        self.assertEqual(info["moved_bars"], -9)
-        self.assertEqual(len(v), 40 * SR - int(21.6 * SR))
+        self.assertEqual(info["moved_bars"], -8)
+        self.assertAlmostEqual(30.1 + info["moved_s"], 10.9, places=3)
+        self.assertEqual(len(v), 40 * SR - int(19.2 * SR))
+
+    def test_a_line_near_the_middle_of_its_bar_lands_the_same_bar_either_way(self):
+        """The same take re-encoded moved its first line by 0.11 s, and the
+        nearest-bar-line snap then moved the whole take a bar: half the
+        renders opened with the drop landing mid-line. Inside the entry
+        bar, both land in the same bar, 0.11 s apart."""
+        secs = _sections((0.0, 9.6, "intro"), (9.6, 60.0, "chorus"))
+        landings = []
+        for first_s in (3.77, 3.88):                     # 1.2 s either side of 2.4/4.8
+            first = int(first_s * SR)
+            _, info = transform.place_at_section(self.vocal(20), SR,
+                                                 [(first, first + 900)],
+                                                 self.grid, secs)
+            landings.append(first_s + info["moved_s"])
+        self.assertAlmostEqual(landings[1] - landings[0], 0.11, places=3)
+        for landed in landings:
+            self.assertGreaterEqual(landed, 9.6 - transform.PICKUP_BEATS * 0.6)
+            self.assertLess(landed, 9.6 + 2.4 - transform.PICKUP_BEATS * 0.6)
+
+    def test_a_short_pickup_leads_into_the_drop(self):
+        """A line starting half a beat before a bar line is a pickup into
+        the drop, not a line that begins mid-bar a bar later."""
+        secs = _sections((0.0, 9.6, "intro"), (9.6, 60.0, "chorus"))
+        first = int(2.1 * SR)                             # 0.3 s before the 2.4 s line
+        _, info = transform.place_at_section(self.vocal(20), SR, [(first, first + 900)],
+                                             self.grid, secs)
+        self.assertAlmostEqual(2.1 + info["moved_s"], 9.3, places=3)
 
     def test_never_cuts_into_the_first_phrase(self):
+        """The line at 2.0 s belongs a bar earlier (its bar is 2.4 s wide and
+        the entry is at 0), but moving it 2.4 s back would cut its start."""
         secs = _sections((0.0, 40.0, "chorus"), (40.0, 60.0, "outro"))
-        first = int(1.3 * SR)                       # nearest bar line is 2.4
+        first = int(2.0 * SR)
         v, info = transform.place_at_section(self.vocal(20), SR, [(first, first + 900)],
                                              self.grid, secs)
         self.assertEqual(info["method"], "kept")

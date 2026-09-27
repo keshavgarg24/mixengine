@@ -135,6 +135,79 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class TestBarPhase(unittest.TestCase):
+    """Which of the vocal's beats is its bar-one.
+
+    The grid confidence cannot tell: a lattice a beat off is as regular
+    as the right one. The phrase starts can.
+    """
+
+    BEAT = BAR / 4.0
+
+    def setUp(self):
+        self.grid = np.arange(0.0, 120.0, BAR)                 # beat's bar lines
+        rng = np.random.default_rng(9)
+        # A verse: a line every bar (some every two), starting on the bar
+        # line give or take 40 ms, with the odd pickup 200 ms early.
+        bars = np.arange(4, 40, 1.0)
+        self.starts = (bars * BAR + rng.normal(0.0, 0.04, bars.size)
+                       - np.where(rng.random(bars.size) < 0.2, 0.2, 0.0))
+
+    def test_the_right_phase_is_kept(self):
+        shift, info = transform.choose_bar_phase(0.0, self.BEAT, self.starts,
+                                                 self.grid)
+        self.assertAlmostEqual(shift, 0.0, places=6)
+        self.assertEqual(info["rotation_beats"], 0.0)
+
+    def test_a_tracker_one_beat_off_is_rotated_back(self):
+        """The grid said the vocal's ones sit a beat after the beat's: the
+        lines then all begin on beat 2. Rotating one beat puts them on one."""
+        for wrong in (self.BEAT, -self.BEAT, 2 * self.BEAT):
+            shift, info = transform.choose_bar_phase(wrong, self.BEAT,
+                                                     self.starts, self.grid)
+            landed = self.starts + shift
+            # the lines' own jitter and pickups leave a few hundredths
+            self.assertLess(transform._bar_phase_cost(landed, self.grid), 0.06,
+                            "wrong shift %.2f -> %.2f" % (wrong, shift))
+            self.assertAlmostEqual(shift, 0.0, delta=0.02)
+
+    def test_a_half_beat_is_left_to_the_tracker(self):
+        """Whole beats only: the tracker's sub-beat phase is the better
+        measurement, and half-beat rotations flipped on weak evidence."""
+        shift, info = transform.choose_bar_phase(self.BEAT / 2, self.BEAT,
+                                                 self.starts, self.grid)
+        self.assertAlmostEqual(shift, self.BEAT / 2, places=6)
+        self.assertEqual(info["rotation_beats"], 0.0)
+
+    def test_the_lattice_is_continued_to_cover_the_first_line(self):
+        grid = np.array([5.68, 8.18, 10.68])
+        ext = transform._extend_lattice(grid, 2.5, 3.88)
+        self.assertAlmostEqual(ext[0], 0.68, places=6)
+        np.testing.assert_allclose(np.diff(ext), 2.5)
+        self.assertAlmostEqual(transform._nearest(ext, 3.88)[0], 3.18, places=6)
+
+    def test_the_fine_part_of_the_shift_survives(self):
+        """The grid's sub-beat measurement is kept; only whole rotations move."""
+        fine = 0.037
+        shift, _ = transform.choose_bar_phase(self.BEAT + fine, self.BEAT,
+                                              self.starts, self.grid)
+        self.assertAlmostEqual(shift, fine, delta=1e-6)
+
+    def test_lines_that_start_mid_bar_do_not_move_the_tracker_off_its_phase(self):
+        """Two-beat lines: every other start is half a bar from a line, in
+        every rotation. No rotation is clearly better, so the tracker's
+        phase stands."""
+        starts = np.arange(4 * BAR, 40 * BAR, BAR / 2.0)
+        shift, info = transform.choose_bar_phase(0.0, self.BEAT, starts, self.grid)
+        self.assertEqual(shift, 0.0)
+        self.assertEqual(info["rotation_beats"], 0.0)
+
+    def test_no_phrases_is_no_opinion(self):
+        shift, info = transform.choose_bar_phase(0.3, self.BEAT, np.zeros(0),
+                                                 self.grid)
+        self.assertEqual((shift, info["rotation_beats"]), (0.3, 0.0))
+
+
 class TestGridTempoRatio(unittest.TestCase):
     """The stretch ratio from the vocal's own bars, not a tempo histogram."""
 

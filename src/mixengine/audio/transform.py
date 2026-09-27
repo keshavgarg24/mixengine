@@ -420,6 +420,58 @@ def _placement_candidates(downbeats: np.ndarray,
     return out or [(first_onset_s, "none")]
 
 
+# A rotation off the tracker's own phase must beat it by this much of the
+# phrase-start cost, or the tracker's phase stands. Whole beats only: the
+# tracker's sub-beat phase proved consistent across re-encodings of the
+# same take (0.11-0.13 s on five of seven), while half-beat rotations on
+# the phrase-start evidence flipped between them.
+PHASE_ROTATION_MARGIN = 0.25
+
+
+def choose_bar_phase(shift: float, beat_s: float, starts: np.ndarray,
+                     downbeats: np.ndarray) -> Tuple[float, dict]:
+    """Which of the vocal's beats is its bar-one.
+
+    The grid alignment lays the vocal's tracked bar-ones on the beat's and
+    reports how regular that lattice is -- not whether the tracker chose
+    the right beat as "one". On a rap take it often does not: the same
+    performance, re-encoded or with one channel flipped, came back with
+    its first line anywhere from 1.8 s before the drop to 1.6 s after it,
+    every time with a grid confidence over 0.99. The lattice was right;
+    the phase was a beat or a half-beat off, and nothing checked.
+
+    Lines of a verse begin on bar lines, or just before them. So the
+    shift the grid found is tried at every beat and half-beat rotation
+    within the bar, each scored by how far *all* the phrase starts then
+    sit from a bar line, and the lowest cost wins -- with the tracker's
+    own phase kept unless another rotation beats it clearly. The fine,
+    sub-beat part of the shift is never touched: the grid measured that
+    well, and the lattice keeps its tempo.
+    """
+    info = {"rotation_beats": 0.0, "cost": None, "tracker_cost": None}
+    if beat_s <= 0 or starts.size == 0 or downbeats.size < 2:
+        return shift, info
+    bar_s = float(np.median(np.diff(downbeats)))
+    if bar_s <= 0:
+        return shift, info
+    n_beats = max(1, int(round(bar_s / beat_s)))
+    tracker_cost = _bar_phase_cost(starts + shift, downbeats)
+    best_shift, best_cost, best_rot = shift, tracker_cost, 0.0
+    surface = {"0": round(tracker_cost, 4)}
+    for rot in range(1, n_beats):
+        for sign in (1.0, -1.0):
+            cand = shift + sign * rot * beat_s
+            # Keep the total shift within the bar the grid chose.
+            cand = ((cand + bar_s / 2.0) % bar_s) - bar_s / 2.0
+            cost = _bar_phase_cost(starts + cand, downbeats)
+            surface["%+d" % int(sign * rot)] = round(cost, 4)
+            if cost < best_cost - PHASE_ROTATION_MARGIN * max(tracker_cost, 1e-6):
+                best_shift, best_cost, best_rot = cand, cost, sign * rot
+    info.update({"rotation_beats": best_rot, "cost": round(best_cost, 4),
+                 "tracker_cost": round(tracker_cost, 4), "surface": surface})
+    return float(best_shift), info
+
+
 def _bar_phase_cost(starts: np.ndarray, downbeats: np.ndarray) -> float:
     """Mean distance from each phrase start to the nearest bar line.
 
@@ -453,7 +505,7 @@ def align_to_downbeat(vocal: np.ndarray, sr: int,
     later stages can warp against the same grid.
     """
     v = dsp.as_2d(vocal)
-    info = {"offset_s": 0.0, "target": None, "method": "none"}
+    info: Dict[str, Any] = {"offset_s": 0.0, "target": None, "method": "none"}
 
     if len(downbeats_s) == 0 or not len(phrases_samples):
         return v, info
@@ -481,10 +533,20 @@ def align_to_downbeat(vocal: np.ndarray, sr: int,
     shift, conf = (_grid_alignment(ones, grid, bar_s)
                    if ones is not None else (0.0, 0.0))
     if ones is not None and conf >= VOCAL_GRID_CONFIDENCE:
-        offset_s = shift
+        starts = np.array([s / sr for s, _ in phrases_samples],
+                          dtype=np.float64)
+        beat_s = (float(np.median(np.diff(np.asarray(beats_s, dtype=np.float64))))
+                  if beats_s is not None and len(beats_s) >= 2 else bar_s / 4.0)
+        offset_s, phase = choose_bar_phase(shift, beat_s, starts, grid)
         method = "vocal_grid"
         info.update({"vocal_bars": int(ones.size),
-                     "grid_confidence": round(conf, 3)})
+                     "grid_confidence": round(conf, 3),
+                     "grid_shift_s": round(float(shift), 4),
+                     "bar_phase": phase})
+        if phase.get("rotation_beats"):
+            log.info("  bar phase: the tracker's one was %+.1f beats off "
+                     "the lines (cost %.3f -> %.3f)", -phase["rotation_beats"],
+                     phase["tracker_cost"], phase["cost"])
     else:
         if ones is not None:
             info["grid_confidence"] = round(conf, 3)
@@ -523,12 +585,15 @@ def align_to_downbeat(vocal: np.ndarray, sr: int,
 
 
 MAX_LEAD_IN_BARS = 8
+# A first line this far before the entry's bar line is a pickup into it.
+PICKUP_BEATS = 1.0
 
 
 def place_at_section(vocal: np.ndarray, sr: int,
                      phrases_samples: Sequence[Tuple[int, int]],
                      downbeats_s: np.ndarray,
-                     sections: Optional[List[dict]]
+                     sections: Optional[List[dict]],
+                     beats_per_bar: int = 4
                      ) -> Tuple[np.ndarray, dict]:
     """Move the vocal, by whole bars, to where the beat arrives.
 
@@ -567,9 +632,16 @@ def place_at_section(vocal: np.ndarray, sr: int,
 
     target_s, _ = _nearest(grid, entry_s)
     first_s = phrases_samples[0][0] / sr
-    current_s, _ = _nearest(grid, first_s)
-    move_s = target_s - current_s
-    if abs(move_s) < bar_s * 0.5:
+    # The first line lands inside the entry's first bar, or leads into it
+    # by up to a beat. Snapping the first line's *nearest* bar line onto
+    # the entry was a coin flip whenever the line sat mid-bar: the same
+    # take, re-encoded, moved a whole bar on a 0.1 s difference, and half
+    # the renders opened with the drop landing mid-line.
+    beat_s = bar_s / max(1, beats_per_bar)
+    window_start = target_s - PICKUP_BEATS * beat_s
+    bars = int(np.ceil((window_start - first_s) / bar_s - 1e-9))
+    move_s = bars * bar_s
+    if bars == 0:
         info.update({"method": "section_entry", "section": entry.get("label"),
                      "entry_s": round(entry_s, 3), "target_s": round(target_s, 3),
                      "moved_bars": 0})
@@ -592,6 +664,20 @@ def place_at_section(vocal: np.ndarray, sr: int,
     log.info("  placed the vocal's first bar at the beat's %s (%.2fs; moved "
              "%+d bars)", entry.get("label"), target_s, info["moved_bars"])
     return v.astype(np.float32), info
+
+
+def _extend_lattice(grid: np.ndarray, bar_s: float, t: float) -> np.ndarray:
+    """The tracked bar lines, continued at the bar length to cover `t`."""
+    if grid.size == 0 or bar_s <= 0:
+        return grid
+    out = grid
+    if t < grid[0]:
+        n = int(np.ceil((grid[0] - t) / bar_s)) + 1
+        out = np.concatenate([grid[0] - bar_s * np.arange(n, 0, -1), out])
+    if t > grid[-1]:
+        n = int(np.ceil((t - grid[-1]) / bar_s)) + 1
+        out = np.concatenate([out, grid[-1] + bar_s * np.arange(1, n + 1)])
+    return out
 
 
 def _nearest(grid: np.ndarray, t: float) -> Tuple[float, float]:
