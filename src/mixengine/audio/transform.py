@@ -451,7 +451,8 @@ def choose_bar_phase(shift: float, beat_s: float, starts: np.ndarray,
     sub-beat part of the shift is never touched: the grid measured that
     well, and the lattice keeps its tempo.
     """
-    info = {"rotation_beats": 0.0, "cost": None, "tracker_cost": None}
+    info: Dict[str, Any] = {"rotation_beats": 0.0, "cost": None,
+                            "tracker_cost": None}
     if beat_s <= 0 or starts.size == 0 or downbeats.size < 2:
         return shift, info
     bar_s = float(np.median(np.diff(downbeats)))

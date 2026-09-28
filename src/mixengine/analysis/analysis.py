@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import warnings
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -1209,7 +1209,7 @@ def voice_presence(y: np.ndarray, sr: int,
                 probs[i // win] = float(
                     model(torch.from_numpy(mono16[i:i + win]), 16000).item())
         speech = probs > 0.5
-        out = {"speech_fraction": round(float(speech.mean()), 3),
+        out: Dict[str, Any] = {"speech_fraction": round(float(speech.mean()), 3),
                "speech_s": round(float(speech.sum()) * win / 16000.0, 2)}
         if phrases is None:
             phrases = detect_phrases(y, sr)

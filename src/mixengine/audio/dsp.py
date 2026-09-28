@@ -363,6 +363,151 @@ def auto_compressor(x: np.ndarray, sr: int, target_gr_db: float,
     return out, {"threshold_db": round(thr, 2), "gain_reduction_db": round(gr, 2)}
 
 
+# The shaper runs at this multiple of the sample rate. Waveshaping is the
+# one process here that creates frequencies the sample rate cannot hold:
+# a 4 kHz sibilant driven into a curve generates harmonics past 20 kHz,
+# and at 44.1 kHz those fold back down as inharmonic tones that sound
+# like grit rather than warmth. Four times is enough that anything folding
+# back lands above hearing at the drives used here.
+SATURATE_OVERSAMPLE = 4
+# Where the signal is placed on the curve before shaping. The level is
+# normalised to this, shaped, then restored, so the character depends on
+# `drive_db` alone and not on how loud the take happened to be.
+SATURATE_OPERATING_RMS = 0.25
+
+
+def _shaper(u: np.ndarray, asymmetry: float) -> np.ndarray:
+    """A soft curve with a little asymmetry.
+
+    Symmetric curves generate odd harmonics only, which read as hardness.
+    A second-order asymmetry adds even harmonics -- the octave, the
+    interval the ear hears as warmth rather than distortion -- which is
+    the difference between a vocal that sounds driven and one that sounds
+    merely louder.
+    """
+    return np.tanh(u + asymmetry * u * u)
+
+
+def saturate(x: np.ndarray, sr: int, amount: float = 0.5,
+             drive_db: float = 6.0, asymmetry: float = 0.2,
+             oversample: int = SATURATE_OVERSAMPLE) -> np.ndarray:
+    """Harmonic saturation, level-matched and oversampled.
+
+    What makes a recorded voice sound finished rather than merely clean.
+    The harmonics it adds sit above the fundamental, so the voice reads
+    louder and closer without its peaks rising -- which is also why it
+    earns its place before a limiter: density bought here is density the
+    limiter does not have to take out of the transients.
+
+    Level is matched across the process, so `amount` changes the character
+    and not the loudness, and an A/B between two settings is a fair one.
+    """
+    x2 = as_2d(x)
+    amount = float(np.clip(amount, 0.0, 1.0))
+    if amount <= 0.001 or x2.size == 0:
+        return x2
+    from scipy import signal as sps
+
+    rms = float(np.sqrt(np.mean(np.square(x2.astype(np.float64)))))
+    if rms < 1e-9:
+        return x2
+
+    scale = (SATURATE_OPERATING_RMS / rms) * db_to_lin(drive_db)
+    up = (sps.resample_poly(x2, oversample, 1, axis=0)
+          if oversample > 1 else x2.astype(np.float64))
+    shaped = _shaper(up * scale, float(asymmetry))
+    wet = (sps.resample_poly(shaped, 1, oversample, axis=0)
+           if oversample > 1 else shaped)
+    wet = pad_to(np.asarray(wet, dtype=np.float32), len(x2))
+
+    # Asymmetry rectifies, which leaves a DC offset behind it.
+    wet = wet - np.mean(wet, axis=0, keepdims=True)
+
+    wet_rms = float(np.sqrt(np.mean(np.square(wet.astype(np.float64)))))
+    if wet_rms > 1e-9:
+        wet = wet * (rms / wet_rms)
+    return ((1.0 - amount) * x2 + amount * wet).astype(np.float32)
+
+
+def soft_clip(x: np.ndarray, sr: int, ceiling_db: float = -1.0,
+              knee_db: float = 4.0, oversample: int = SATURATE_OVERSAMPLE
+              ) -> Tuple[np.ndarray, dict]:
+    """Round off the few samples that stand above everything else.
+
+    A limiter turns its gain down for as long as its release takes, so
+    every peak it catches costs the audio around that peak too. A clipper
+    shortens the peak itself and touches nothing else, and a peak a few
+    samples long is too short for the ear to hear as distortion. Handing
+    the isolated peaks to a clipper is what lets the limiter stop working
+    so hard, and the limiter's work is what a master loses its snap to.
+
+    Exactly linear below the knee, so quiet material is untouched: only
+    what approaches the ceiling is shaped at all.
+    """
+    x2 = as_2d(x)
+    if x2.size == 0:
+        return x2, {"applied": False}
+    ceiling = db_to_lin(ceiling_db)
+    knee = ceiling * db_to_lin(-abs(knee_db))
+    span = max(ceiling - knee, 1e-6)
+    from scipy import signal as sps
+
+    # Nothing near the ceiling: return the input itself. Resampling up and
+    # back is not quite lossless, and a clipper that is not clipping must
+    # leave the audio bit-for-bit alone rather than dusting it with
+    # conversion error.
+    if float(np.abs(x2).max()) <= knee:
+        return x2, {"applied": False, "ceiling_db": round(float(ceiling_db), 2),
+                    "knee_db": round(float(knee_db), 2),
+                    "samples_shaped_pct": 0.0}
+
+    up = (sps.resample_poly(x2, oversample, 1, axis=0)
+          if oversample > 1 else x2.astype(np.float64))
+    mag = np.abs(up)
+    over = mag > knee
+    clipped_frac = float(np.mean(over))
+    if clipped_frac > 0:
+        shaped = knee + span * np.tanh((mag - knee) / span)
+        up = np.where(over, np.sign(up) * shaped, up)
+    down = (sps.resample_poly(up, 1, oversample, axis=0)
+            if oversample > 1 else up)
+    out = pad_to(np.asarray(down, dtype=np.float32), len(x2))
+    return out, {"applied": bool(clipped_frac > 0),
+                 "ceiling_db": round(float(ceiling_db), 2),
+                 "knee_db": round(float(knee_db), 2),
+                 "samples_shaped_pct": round(100.0 * clipped_frac, 3)}
+
+
+def parallel_compress(x: np.ndarray, sr: int, amount: float = 0.35,
+                      target_gr_db: float = 10.0, ratio: float = 6.0
+                      ) -> Tuple[np.ndarray, dict]:
+    """Blend a hard-compressed copy under the original.
+
+    The way a vocal is made dense without being made flat. Compressing the
+    signal itself to this depth would take the life out of it; running the
+    squashed copy underneath instead raises what is quiet -- the tail of a
+    word, a breath, the consonant after a loud vowel -- while every peak
+    stays where the performance put it.
+    """
+    x2 = as_2d(x)
+    amount = float(np.clip(amount, 0.0, 1.0))
+    if amount <= 0.001 or x2.size == 0:
+        return x2, {"applied": False}
+    squashed, info = auto_compressor(
+        x2, sr, target_gr_db=target_gr_db, ratio=ratio,
+        attack_ms=8.0, release_ms=120.0, knee_db=6.0)
+    # Match the copy's level to the source so `amount` is a blend and not
+    # a volume control.
+    src_rms = float(np.sqrt(np.mean(np.square(x2.astype(np.float64)))))
+    cp_rms = float(np.sqrt(np.mean(np.square(squashed.astype(np.float64)))))
+    if cp_rms > 1e-9 and src_rms > 1e-9:
+        squashed = squashed * (src_rms / cp_rms)
+    out = (x2 + amount * squashed) / (1.0 + amount)
+    return out.astype(np.float32), {
+        "applied": True, "amount": round(amount, 3),
+        "copy_gain_reduction_db": info.get("gain_reduction_db", 0.0)}
+
+
 def deesser(x: np.ndarray, sr: int, low_hz: float = 5000.0,
             high_hz: float = 9500.0, max_gr_db: float = 8.0,
             sensitivity: float = 1.0) -> Tuple[np.ndarray, float]:

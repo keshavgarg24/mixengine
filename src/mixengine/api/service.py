@@ -392,7 +392,7 @@ class EngineService:
             user_bpm = getattr(intents, "bpm", None) if intents else None
             user_key = getattr(intents, "key", None) if intents else None
             vdna = self.analyze_vocal(vocal_path, user_bpm=user_bpm,
-                                      user_key=user_key, job=j)
+                                      user_key=user_key, beat=bdna, job=j)
             if vdna.get("status") != "ok":
                 raise RuntimeError("the vocal could not be used: %s"
                                    % (vdna.get("error") or "analysis failed"))
@@ -444,7 +444,7 @@ class EngineService:
             user_bpm = getattr(intents, "bpm", None) if intents else None
             user_key = getattr(intents, "key", None) if intents else None
             vdna = self.analyze_vocal(vocal_path, user_bpm=user_bpm,
-                                      user_key=user_key, job=j)
+                                      user_key=user_key, beat=bdna, job=j)
             if vdna.get("status") != "ok":
                 raise RuntimeError("the vocal could not be used: %s"
                                    % (vdna.get("error") or "analysis failed"))

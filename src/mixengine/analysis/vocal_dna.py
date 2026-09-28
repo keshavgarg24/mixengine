@@ -76,6 +76,18 @@ def extract(path: str,
         return {"vocal_id": vocal_id, "status": "failed",
                 "error": "audio is silent", "version": DNA_SCHEMA_VERSION}
 
+    # ── Stage 0a: one voice, one channel ──────────────────────────────────
+    # A lead belongs in the centre, and a take that arrives as two
+    # decorrelated channels cannot be put there. Done first, before
+    # anything measures or subtracts: every stage below reads level,
+    # phase or a spectrum, and on a take whose channels partly cancel
+    # each of those is reading the cancellation as much as the singer.
+    y, mono_report = audio_io.fold_to_mono(y, sr)
+    if mono_report.get("applied"):
+        log.info("  mono: %s", mono_report.get("note", ""))
+        if mono_report.get("note"):
+            quality.repairs.append(mono_report["note"])
+
     # ── Stage 0: de-bleed against a known beat ────────────────────────────
     # Runs before classification, because removing the beat is what makes
     # the classifier see a clean vocal rather than a mixture -- and the
@@ -340,6 +352,7 @@ def extract(path: str,
         "performance_span": span,
         "noise": noise,
         "voice": voice,
+        "mono_fold": mono_report,
         "lyrics": words,
         "intelligibility": lyrics.intelligibility(words),
 

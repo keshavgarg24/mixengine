@@ -123,6 +123,38 @@ def process_vocal(vocal: np.ndarray, sr: int, vocal_dna: dict,
     comp_info["target_gr_db"] = round(comp_target, 2)
     report["compressor"] = comp_info
 
+    # ── 6b. Density under the peaks ───────────────────────────────────────
+    # A hard-compressed copy underneath, rather than more compression on
+    # the signal itself. What was quiet comes up -- the end of a word, a
+    # breath, the consonant after a loud vowel -- and the peaks stay where
+    # the performance put them.
+    par_amount = max(0.0, profile.vocal_parallel_comp
+                     + float(o.get("parallel_comp", 0.0)))
+    v, par_info = dsp.parallel_compress(v, sr, amount=par_amount)
+    report["parallel_compression"] = par_info
+
+    # ── 6c. Saturation ────────────────────────────────────────────────────
+    # The step that separates a clean vocal from a produced one. Its
+    # harmonics sit above the fundamental, so the voice reads louder and
+    # closer while its peaks stay put -- density the limiter downstream
+    # then does not have to take out of the transients.
+    sat_amount = float(np.clip(profile.vocal_saturation
+                               + float(o.get("saturation", 0.0)), 0.0, 1.0))
+    if sat_amount > 0.01:
+        v = dsp.saturate(v, sr, amount=sat_amount,
+                         drive_db=CFG.mix.vocal_saturation_drive_db)
+        # Saturation makes highs as well as harmonics, and some of them
+        # land on the sibilants the de-esser already treated once. A
+        # second, gentler pass catches what the new harmonics put back.
+        v, resib = dsp.deesser(v, sr, CFG.mix.deess_low_hz, CFG.mix.deess_high_hz,
+                               max_gr_db=CFG.mix.deess_max_gr_db * 0.5,
+                               sensitivity=sensitivity)
+        report["saturation"] = {"amount": round(sat_amount, 3),
+                                "drive_db": CFG.mix.vocal_saturation_drive_db,
+                                "post_deess_db": round(resib, 2)}
+    else:
+        report["saturation"] = {"amount": 0.0}
+
     # ── 7. Tone shaping ───────────────────────────────────────────────────
     # Low-mid cleanup scaled by how much energy is actually there.
     f, mag = dsp.long_term_spectrum(v, sr)

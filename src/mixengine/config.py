@@ -151,18 +151,35 @@ class GenreProfile:
     delay_note: float           # 0.25 = quarter note, 0.125 = eighth
     tune_strength: float        # 0 = off, 1 = hard tune
     stereo_double: bool         # generate doubled/panned hook layers
+    # How much of the saturated copy of the vocal is blended back in, 0-1.
+    # This is the difference between a clean vocal and a produced one: the
+    # harmonics it adds let the voice read louder and closer without its
+    # peaks rising, so it also buys back limiting headroom downstream.
+    vocal_saturation: float = 0.35
+    # How much of a hard-compressed copy sits under the vocal, 0-1. Raises
+    # breaths, word tails and consonants without flattening the peaks the
+    # performance put there.
+    vocal_parallel_comp: float = 0.30
 
 
 GENRE_PROFILES: Dict[str, GenreProfile] = {
-    "trap": GenreProfile("trap", -8.5, -1.0, 2.5, 0.55, 0.85, 3.5, 5.0, 0.06, 0.25, 0.55, True),
-    "drill": GenreProfile("drill", -8.0, -0.5, 3.0, 0.60, 0.85, 4.0, 5.5, 0.05, 0.25, 0.60, True),
-    "hip_hop": GenreProfile("hip_hop", -9.0, -1.5, 2.0, 0.50, 0.85, 3.0, 4.5, 0.07, 0.25, 0.35, True),
-    "rnb": GenreProfile("rnb", -10.5, -2.5, 1.5, 0.45, 0.90, 3.0, 4.0, 0.12, 0.375, 0.30, True),
-    "pop": GenreProfile("pop", -9.5, -2.0, 2.0, 0.50, 0.90, 3.5, 4.5, 0.10, 0.25, 0.45, True),
-    "afrobeats": GenreProfile("afrobeats", -9.0, -2.0, 2.0, 0.50, 0.90, 3.0, 4.0, 0.09, 0.25, 0.35, True),
-    "drum_and_bass": GenreProfile("drum_and_bass", -8.5, -1.5, 2.5, 0.55, 0.85, 3.5, 4.5, 0.08, 0.125, 0.30, False),
-    "lofi": GenreProfile("lofi", -12.0, -3.0, 1.0, 0.35, 0.90, 1.5, 3.0, 0.15, 0.375, 0.10, False),
-    "default": GenreProfile("default", -10.0, -2.0, 2.0, 0.50, 0.88, 3.0, 4.5, 0.08, 0.25, 0.35, True),
+    "trap": GenreProfile("trap", -10.0, -1.0, 2.5, 0.55, 0.85, 3.5, 5.0, 0.06, 0.25, 0.55, True,
+                         vocal_saturation=0.45, vocal_parallel_comp=0.35),
+    "drill": GenreProfile("drill", -9.5, -0.5, 3.0, 0.60, 0.85, 4.0, 5.5, 0.05, 0.25, 0.60, True,
+                         vocal_saturation=0.45, vocal_parallel_comp=0.35),
+    "hip_hop": GenreProfile("hip_hop", -10.0, -1.5, 2.0, 0.50, 0.85, 3.0, 4.5, 0.07, 0.25, 0.35, True,
+                         vocal_saturation=0.40, vocal_parallel_comp=0.32),
+    "rnb": GenreProfile("rnb", -11.0, -2.5, 1.5, 0.45, 0.90, 3.0, 4.0, 0.12, 0.375, 0.30, True,
+                         vocal_saturation=0.28, vocal_parallel_comp=0.30),
+    "pop": GenreProfile("pop", -10.5, -2.0, 2.0, 0.50, 0.90, 3.5, 4.5, 0.10, 0.25, 0.45, True,
+                         vocal_saturation=0.35, vocal_parallel_comp=0.30),
+    "afrobeats": GenreProfile("afrobeats", -10.0, -2.0, 2.0, 0.50, 0.90, 3.0, 4.0, 0.09, 0.25, 0.35, True,
+                         vocal_saturation=0.32, vocal_parallel_comp=0.28),
+    "drum_and_bass": GenreProfile("drum_and_bass", -10.0, -1.5, 2.5, 0.55, 0.85, 3.5, 4.5, 0.08, 0.125, 0.30, False,
+                         vocal_saturation=0.40, vocal_parallel_comp=0.25),
+    "lofi": GenreProfile("lofi", -12.0, -3.0, 1.0, 0.35, 0.90, 1.5, 3.0, 0.15, 0.375, 0.10, False,
+                         vocal_saturation=0.45, vocal_parallel_comp=0.18),
+    "default": GenreProfile("default", -10.5, -2.0, 2.0, 0.50, 0.88, 3.0, 4.5, 0.08, 0.25, 0.35, True),
 }
 
 # Genre adjacency, used by the relaxation ladder when candidates are thin.
@@ -207,6 +224,12 @@ class MixConfig:
     resonance_max_cut_db: float = 4.5
     resonance_q: float = 6.0
 
+    # How hard the vocal is pushed into the saturation curve. The blend is
+    # per genre; this sets the character of what is blended, and is kept
+    # modest because the harmonics are meant to be heard as the voice
+    # rather than as an effect on it.
+    vocal_saturation_drive_db: float = 6.0
+
     # -- Beat processing ---------------------------------------------------
     duck_attack_ms: float = 12.0
     duck_release_ms: float = 220.0
@@ -234,7 +257,25 @@ class MixConfig:
     # back down afterwards while the squashed dynamics stay squashed. When
     # the target needs more than this, the engine delivers quieter and says
     # so rather than crushing the master.
-    max_limiting_db: float = 6.0
+    #
+    # Measured on one take through the whole chain, the budget buys this:
+    #
+    #     budget    delivered    short-term crest
+    #     6.0 dB    -9.1 LUFS        6.7 dB
+    #     3.5 dB   -11.0 LUFS        8.8 dB
+    #     1.5 dB   -12.4 LUFS        9.7 dB
+    #
+    # Every streaming service normalises to about -14 LUFS, so the first
+    # row is turned down on playback until it is no louder than the
+    # others -- and arrives there with two decibels less transient left.
+    # The loudness is lent back; the dynamics are not.
+    max_limiting_db: float = 3.5
+    # The clipper sits this far above the limiter's ceiling, so the limiter
+    # still owns the ceiling and the clipper only shortens what would have
+    # driven it hardest. Above zero and the limiter has nothing left to
+    # catch; far below and the clipper is doing the limiter's job audibly.
+    clipper_over_ceiling_db: float = 0.5
+    clipper_knee_db: float = 4.0
     # Spectral match toward the beat's own tonal balance, 0-1.
     tonal_match_strength: float = 0.35
 

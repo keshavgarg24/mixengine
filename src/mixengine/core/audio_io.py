@@ -81,6 +81,170 @@ def _channel_correlation(y2: np.ndarray) -> Optional[float]:
     return float(np.corrcoef(a, b)[0, 1])
 
 
+# A lead vocal is one voice arriving from one place, so its two channels
+# are the same signal and belong summed. These decide how.
+#
+# The numbers come from measuring the real takes in this repository. Three
+# of four carried channels that cancel when summed: one was the same
+# signal 11 samples apart (a phone's two microphones, about 8 cm), one had
+# genuinely different content per channel, one was clean.
+MONO_LAG_MAX_MS = 5.0          # wider than any microphone spacing on a body
+# Above this the two channels are one signal recorded once -- a duplicated
+# mono file, or a stereo bounce of a centred vocal -- and summing them is
+# lossless and averages away what little noise differs.
+#
+# Below it they are two different acoustic paths, and summing is the wrong
+# move even after alignment: the second path is a further microphone
+# hearing more room, so the sum adds room to a close signal rather than
+# averaging noise. Measured on this repository's takes, the better channel
+# alone transcribed 80 words where the aligned sum of both gave 11 and a
+# naive sum gave none at all.
+MONO_IDENTICAL_CORR = 0.98
+MONO_VOICE_LOW_HZ = 300.0      # the band the decision is measured in
+MONO_VOICE_HIGH_HZ = 4000.0
+MONO_ANALYSIS_S = 20.0         # enough to find a lag; keeps the FFT cheap
+
+
+def _voice_band(x: np.ndarray, sr: int) -> np.ndarray:
+    """One channel band-limited to where a voice decides these questions.
+
+    Room rumble and hiss both correlate differently from the voice, and
+    letting them into the measurement moves the answer for reasons that
+    have nothing to do with the singer.
+    """
+    lo = MONO_VOICE_LOW_HZ / (sr / 2.0)
+    hi = min(MONO_VOICE_HIGH_HZ / (sr / 2.0), 0.99)
+    if lo >= hi:
+        return x
+    from scipy import signal as sps
+    b, a = sps.butter(4, [lo, hi], btype="band")
+    return sps.filtfilt(b, a, x)
+
+
+def _interchannel_lag(a: np.ndarray, b: np.ndarray,
+                      sr: int) -> Tuple[int, float]:
+    """Samples `b` trails `a` by, and their correlation once aligned.
+
+    A negative correlation at the best lag means one channel's polarity is
+    inverted; the sign is returned with the value so the caller can undo
+    it rather than treating the take as incoherent.
+    """
+    from scipy import signal as sps
+    n = min(len(a), int(sr * MONO_ANALYSIS_S))
+    if n < sr // 10:
+        return 0, 1.0
+    x, y = a[:n] - np.mean(a[:n]), b[:n] - np.mean(b[:n])
+    norm = float(np.sqrt(np.sum(x * x) * np.sum(y * y)))
+    if norm <= 1e-20:
+        return 0, 1.0
+    c = sps.correlate(x, y, mode="full", method="fft")
+    lags = sps.correlation_lags(len(x), len(y), mode="full")
+    keep = np.abs(lags) <= int(sr * MONO_LAG_MAX_MS / 1000.0)
+    c, lags = c[keep], lags[keep]
+    if c.size == 0:
+        return 0, 1.0
+    k = int(np.argmax(np.abs(c)))
+    return int(lags[k]), float(c[k] / norm)
+
+
+def fold_to_mono(y: np.ndarray, sr: int) -> Tuple[np.ndarray, dict]:
+    """Bring a vocal take to one centred channel, without cancelling it.
+
+    A lead vocal belongs in the centre of a mix, and a take that arrives
+    as two decorrelated channels cannot be put there: processed as
+    stereo it smears across the image, and summed naively it comb-filters
+    and loses the voice. On the takes in this repository a plain sum cost
+    between 3.8 and 6.1 dB in the band the voice occupies -- not a quiet
+    vocal but a hollow one, because the loss is frequency-dependent.
+
+    So the two channels are compared before they are combined:
+
+    * **One signal recorded once**, duplicated across both channels or
+      bounced from a centred source. Summing is lossless, and what little
+      differs between the channels is noise worth averaging.
+    * **Two microphones**, which is how a phone records: the same voice a
+      few centimetres and a fraction of a millisecond apart. Here the
+      better channel is kept whole. Aligning and summing was tried first
+      and is worse, which is worth stating because it is the obvious
+      move: the far microphone's share is not independent noise to
+      average away but a second acoustic path carrying more room, so the
+      sum blurs a close signal instead of cleaning it. On the take that
+      settled this, the closer channel alone transcribed 80 words, their
+      aligned sum 11, and their naive sum none at all.
+    * **Polarity inverted** on one channel. Summed it disappears
+      entirely; the flip is undone before anything else is decided.
+
+    Already-mono audio is returned untouched. A genuine stereo
+    performance -- a pair over a choir -- would be narrowed by this, which
+    is the right trade for a lead vocal and the wrong one for anything
+    else, so nothing but the vocal path calls it.
+    """
+    y2 = dsp.as_2d(y)
+    rep: dict = {"applied": False, "channels_in": int(y2.shape[1])}
+    if y2.shape[1] < 2:
+        rep["method"] = "already_mono"
+        return y2, rep
+    if y2.shape[1] > 2:
+        rep.update({"applied": True, "method": "sum",
+                    "note": "%d channels were summed to one" % y2.shape[1]})
+        return dsp.to_mono(y2)[:, None].astype(np.float32), rep
+
+    a = _voice_band(y2[:, 0].astype(np.float64), sr)
+    b = _voice_band(y2[:, 1].astype(np.float64), sr)
+    if np.std(a) <= 1e-9 or np.std(b) <= 1e-9:
+        # One channel is silent: the other is the take.
+        keep = 0 if np.std(a) > np.std(b) else 1
+        rep.update({"applied": True, "method": "better_channel",
+                    "kept_channel": keep,
+                    "note": "one channel was silent, so the other was kept"})
+        return y2[:, keep:keep + 1].astype(np.float32), rep
+
+    lag, corr = _interchannel_lag(a, b, sr)
+    rep.update({"lag_samples": lag, "lag_ms": round(lag / sr * 1000.0, 3),
+                "aligned_correlation": round(corr, 3),
+                "polarity_flipped": bool(corr < 0)})
+
+    left = y2[:, 0].astype(np.float64)
+    right = y2[:, 1].astype(np.float64)
+    if corr < 0:
+        right = -right
+
+    if abs(corr) >= MONO_IDENTICAL_CORR:
+        if lag:
+            right = np.roll(right, lag)
+            # Roll wraps; the wrapped edge is not signal.
+            if lag > 0:
+                right[:lag] = 0.0
+            else:
+                right[lag:] = 0.0
+        mono = (left + right) * 0.5
+        note = ("one channel's polarity was inverted and was flipped back; "
+                if rep["polarity_flipped"] else "")
+        rep.update({"applied": True, "method": "sum",
+                    "note": note + "the two channels held the same signal "
+                                   "and were summed to one centred channel"})
+        return mono[:, None].astype(np.float32), rep
+
+    # Two microphones, or two different paths. Keep the one that hears the
+    # voice most clearly over its own floor -- not merely the loudest,
+    # which on a phone can be the microphone facing the room.
+    snr = []
+    for ch in (y2[:, 0:1], y2[:, 1:2]):
+        floor = float(dsp.noise_floor_db(ch, sr))
+        snr.append(float(dsp.rms_db(ch)) - floor)
+    keep = 0 if snr[0] >= snr[1] else 1
+    rep.update({"applied": True, "method": "better_channel",
+                "kept_channel": keep,
+                "channel_snr_db": [round(s, 1) for s in snr],
+                "note": ("the take had two microphones on it (the channels "
+                         "match %.0f%%), so the %s one -- the clearer by "
+                         "%.1f dB -- was kept as the vocal and the other "
+                         "dropped, because summing them hollows the voice"
+                         % (abs(corr) * 100, "left" if keep == 0 else "right",
+                            abs(snr[0] - snr[1])))})
+    return y2[:, keep:keep + 1].astype(np.float32), rep
+
+
 def probe_quality(y: np.ndarray, sr: int, path: str = "") -> AudioQuality:
     """Measure everything the downstream chain needs to adapt to."""
     y2 = dsp.as_2d(y)

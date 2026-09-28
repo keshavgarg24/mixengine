@@ -155,15 +155,24 @@ def _converge_loudness(y: np.ndarray, sr: int, target_lufs: float,
 
     limiting = 0.0
     best, best_err = None, float("inf")
+    best_clip: Dict = {"applied": False}
 
     for _ in range(max_passes):
-        out = _limit(src * dsp.db_to_lin(free_gain + limiting), sr, ceiling_db)
+        driven = src * dsp.db_to_lin(free_gain + limiting)
+        # Isolated peaks go to the clipper, which shortens them and leaves
+        # their surroundings alone; only what the clipper does not catch
+        # reaches the limiter, whose gain reduction lasts as long as its
+        # release and so costs the music around each peak as well.
+        driven, clip_info = dsp.soft_clip(
+            driven, sr, ceiling_db=ceiling_db + CFG.mix.clipper_over_ceiling_db,
+            knee_db=CFG.mix.clipper_knee_db)
+        out = _limit(driven, sr, ceiling_db)
         lufs = audio_io.integrated_lufs(out, sr)
         if not np.isfinite(lufs):
             break
         err = abs(target_lufs - lufs)
         if err < best_err:
-            best, best_err = out, err
+            best, best_err, best_clip = out, err, clip_info
         if err <= tolerance_db:
             break
         deficit = target_lufs - lufs
@@ -174,6 +183,7 @@ def _converge_loudness(y: np.ndarray, sr: int, target_lufs: float,
     out = best if best is not None else _limit(src * dsp.db_to_lin(free_gain), sr, ceiling_db)
     final_err = best_err if best is not None else float("inf")
 
+    report["clipper"] = best_clip
     report["gain_into_limiter_db"] = round(limiting, 2)
     report["total_gain_db"] = round(free_gain + limiting, 2)
     report["loudness_error_db"] = round(float(final_err), 2)
