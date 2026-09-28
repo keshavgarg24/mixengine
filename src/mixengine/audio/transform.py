@@ -493,14 +493,40 @@ def _bar_phase_cost(starts: np.ndarray, downbeats: np.ndarray) -> float:
     return float(np.mean(np.minimum(nearest, bar / 2.0)) / bar)
 
 
+# Fewer stable line starts than this and the phrase starts are kept: the
+# phase is a vote, and three lines is the smallest number that can carry
+# one against a phrase list that usually has more members.
+MIN_PHASE_LINES = 3
+
+
+def _phase_starts(phrase_starts: np.ndarray,
+                  line_starts_s: Optional[np.ndarray]) -> Tuple[np.ndarray, str]:
+    """Which set of starts decides the bar phase, and where it came from."""
+    if line_starts_s is None:
+        return phrase_starts, "phrases"
+    lines = np.asarray(line_starts_s, dtype=np.float64)
+    lines = lines[np.isfinite(lines)]
+    if lines.size < MIN_PHASE_LINES:
+        return phrase_starts, "phrases"
+    return lines, "lyrics"
+
+
 def align_to_downbeat(vocal: np.ndarray, sr: int,
                       phrases_samples: Sequence[Tuple[int, int]],
                       downbeats_s: np.ndarray,
                       beats_s: Optional[np.ndarray] = None,
                       allow_beat_level: bool = True,
-                      vocal_ones: Optional[np.ndarray] = None
+                      vocal_ones: Optional[np.ndarray] = None,
+                      line_starts_s: Optional[np.ndarray] = None
                       ) -> Tuple[np.ndarray, dict]:
     """Shift the vocal so its first phrase begins on a bar line.
+
+    `line_starts_s` are where the transcriber says the sung lines begin.
+    When they are given they settle the bar phase in place of the phrase
+    starts, because they are the same measurement taken a stabler way: a
+    phrase start is an energy threshold and moves when the take is
+    clipped or re-encoded, and a word start comes from the model's
+    attention alignment and does not.
 
     The original engine aligned the first detected vocal onset to the first
     detected beat transient. Two problems: the first detected beat is
@@ -539,9 +565,11 @@ def align_to_downbeat(vocal: np.ndarray, sr: int,
     if ones is not None and conf >= VOCAL_GRID_CONFIDENCE:
         starts = np.array([s / sr for s, _ in phrases_samples],
                           dtype=np.float64)
+        phase_starts, phase_src = _phase_starts(starts, line_starts_s)
         beat_s = (float(np.median(np.diff(np.asarray(beats_s, dtype=np.float64))))
                   if beats_s is not None and len(beats_s) >= 2 else bar_s / 4.0)
-        offset_s, phase = choose_bar_phase(shift, beat_s, starts, grid)
+        offset_s, phase = choose_bar_phase(shift, beat_s, phase_starts, grid)
+        phase["starts_from"] = phase_src
         method = "vocal_grid"
         info.update({"vocal_bars": int(ones.size),
                      "grid_confidence": round(conf, 3),
@@ -556,6 +584,8 @@ def align_to_downbeat(vocal: np.ndarray, sr: int,
             info["grid_confidence"] = round(conf, 3)
         starts = np.array([s / sr for s, _ in phrases_samples],
                           dtype=np.float64)
+        starts, phase_src = _phase_starts(starts, line_starts_s)
+        info["starts_from"] = phase_src
         candidates = _placement_candidates(grid, beats_s, first_onset_s,
                                            allow_beat_level)
         best_offset, best_cost, method = 0.0, np.inf, "none"

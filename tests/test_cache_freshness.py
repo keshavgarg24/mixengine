@@ -23,7 +23,7 @@ FULL = {"rhythm": "madmom", "pitch": "torchcrepe", "separation": "demucs"}
 
 # What a take analysed today carries: the judgement the questions read.
 JUDGED = {"noise": {"verdict": "clean"}, "performance_span": {},
-          "voice": {"verdict": "voice"}}
+          "voice": {"verdict": "voice"}, "lyrics": {"n_words": 12}}
 
 
 class TestImprovementOver(unittest.TestCase):
@@ -93,6 +93,27 @@ class TestDocumentWrappers(unittest.TestCase):
             self.assertIsNone(vocal_dna.can_improve(doc, now=BASIC))
         finally:
             CAPS.silero_vad = had
+
+    def test_a_vocal_never_transcribed_is_analysed_again(self):
+        """The hook, the bar phase and the intelligibility check all read
+        the transcript, so a document made before a transcriber was
+        installed is worth redoing -- unless the take has no voice in it,
+        where there is nothing to transcribe."""
+        from mixengine.core.capabilities import CAPS
+        doc = {"status": "ok", "needs_separation": False,
+               "analysis_backends": BASIC,
+               "conditioned_path": __file__, **JUDGED}
+        del doc["lyrics"]
+        had = CAPS.whisper
+        try:
+            CAPS.whisper = True
+            self.assertIn("transcribed", vocal_dna.can_improve(doc, now=BASIC))
+            silent = dict(doc, voice={"verdict": "no_voice"})
+            self.assertIsNone(vocal_dna.can_improve(silent, now=BASIC))
+            CAPS.whisper = False
+            self.assertIsNone(vocal_dna.can_improve(doc, now=BASIC))
+        finally:
+            CAPS.whisper = had
 
     def test_a_vocal_never_judged_for_noise_is_analysed_again(self):
         """The noise verdict and the performance span are what the person

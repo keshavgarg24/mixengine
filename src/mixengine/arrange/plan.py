@@ -112,8 +112,14 @@ def build(vocal: np.ndarray, sr: int,
           downbeats: Optional[FloatSeq] = None,
           beats: Optional[FloatSeq] = None,
           beat_sections: Optional[Sequence[Section]] = None,
-          allow_layers: bool = True) -> SongPlan:
-    """Plan the arrangement for one vocal over one beat."""
+          allow_layers: bool = True,
+          lyrics_doc: Optional[dict] = None) -> SongPlan:
+    """Plan the arrangement for one vocal over one beat.
+
+    `lyrics_doc` is the take's transcript, when one was made. It goes to
+    the structure pass, where repeated words identify a hook that chroma
+    and melodic contour can only guess at.
+    """
     n = len(vocal)
     total = n / float(sr)
     plan = SongPlan(genre=genre, performance_type=performance_type,
@@ -130,7 +136,8 @@ def build(vocal: np.ndarray, sr: int,
 
     # ── 1. What is the hook ───────────────────────────────────────────────
     st = structure_mod.analyze(vocal, sr, phrases, beats=beats,
-                               performance_type=performance_type)
+                               performance_type=performance_type,
+                               lyrics_doc=lyrics_doc)
     plan.structure = st
     plan.sections = structure_mod.sections_from_labels(
         st.phrases, st.labels, total, downbeats)

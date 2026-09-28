@@ -48,6 +48,17 @@ MIN_HOOK_REPEATS = 2
 MIN_PHRASE_S = 0.8
 ADLIB_MAX_S = 1.4
 
+# A phrase needs this many transcribed words before its words are compared
+# at all. One word matching one word is a coincidence, not a repeat.
+MIN_LYRIC_TOKENS = 2
+
+# What a perfectly-transcribed lyric match is worth against chroma (0.5)
+# and melodic contour (0.3). The largest single weight, because identical
+# words are the one piece of evidence that is not circumstantial -- but it
+# is scaled by the transcriber's own confidence before it is used, so this
+# is a ceiling reached only on a take the model read cleanly.
+LYRIC_WEIGHT = 0.6
+
 
 @dataclass
 class PhraseFeature:
@@ -59,6 +70,8 @@ class PhraseFeature:
     rms_db: float = -60.0
     median_midi: float = 0.0
     onset_rate: float = 0.0
+    tokens: List[str] = field(default_factory=list)
+    token_confidence: float = 0.0
 
     @property
     def duration(self) -> float:
@@ -89,10 +102,18 @@ class StructureResult:
 
 def analyze(y: np.ndarray, sr: int, phrases: Sequence[Tuple[int, int]],
             *, beats: Optional[FloatSeq] = None,
-            performance_type: str = "sung") -> StructureResult:
-    """Label each phrase of a vocal take. Never raises; degrades to labels."""
+            performance_type: str = "sung",
+            lyrics_doc: Optional[dict] = None) -> StructureResult:
+    """Label each phrase of a vocal take. Never raises; degrades to labels.
+
+    `lyrics_doc` is the take's transcript when one was made. Words settle
+    what chroma and contour can only suggest, and they settle it best
+    exactly where those two are weakest: two verses of a rap share a key,
+    a register and a voice, and differ in nothing but what is said.
+    """
     res = StructureResult()
     feats = _features(y, sr, phrases, beats)
+    _attach_lyrics(feats, lyrics_doc, phrases, sr)
     res.phrases = feats
     if len(feats) < 2:
         res.labels = ["verse"] * len(feats)
@@ -104,10 +125,33 @@ def analyze(y: np.ndarray, sr: int, phrases: Sequence[Tuple[int, int]],
     res.groups = _cluster(res.similarity)
     res.hook_group = _pick_hook(feats, res.groups, performance_type)
     res.labels = _label(feats, res.groups, res.hook_group)
+    if any(f.tokens for f in feats):
+        res.method = "repetition+lyrics"
     if res.hook_group < 0:
         res.note = ("no phrase repeats often enough to be a hook; "
                     "arranged as a continuous verse")
     return res
+
+
+def _attach_lyrics(feats: List[PhraseFeature], doc: Optional[dict],
+                   phrases: Sequence[Tuple[int, int]], sr: int) -> None:
+    """Hang each phrase's words on its feature record.
+
+    `_features` drops phrases too short to measure, so the features are
+    not one-to-one with the phrase list and are matched by their own
+    recorded index rather than by position.
+    """
+    if not doc:
+        return
+    try:
+        from ..analysis import lyrics as lyrics_mod
+        per = lyrics_mod.phrase_lyrics(doc, phrases, sr)
+    except Exception as exc:                                # pragma: no cover
+        log.debug("lyrics unavailable for structure: %s", exc)
+        return
+    for f in feats:
+        if 0 <= f.index < len(per):
+            f.tokens, f.token_confidence = per[f.index]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -214,6 +258,19 @@ def _similarity(feats: Sequence[PhraseFeature]) -> np.ndarray:
             rate = min(a.onset_rate, b.onset_rate) / max(
                 a.onset_rate, b.onset_rate, 1e-6)
             parts.append((float(np.clip(rate, 0.0, 1.0)), 0.1))
+            # What was actually said. Weighted by how sure the transcriber
+            # was of these two phrases, which keeps a transcript the model
+            # could barely read from inventing a hook: its tokens then
+            # repeat for reasons of its own rather than the singer's, and
+            # at low confidence they are worth almost nothing against the
+            # chroma and contour that carry the rest of the decision.
+            if (len(a.tokens) >= MIN_LYRIC_TOKENS
+                    and len(b.tokens) >= MIN_LYRIC_TOKENS):
+                from ..analysis.lyrics import line_similarity
+                conf = min(a.token_confidence, b.token_confidence)
+                w = LYRIC_WEIGHT * float(np.clip(conf, 0.0, 1.0))
+                if w > 0.01:
+                    parts.append((line_similarity(a.tokens, b.tokens), w))
 
             total_w = sum(w for _, w in parts)
             s = sum(v * w for v, w in parts) / total_w if total_w > 0 else 0.0

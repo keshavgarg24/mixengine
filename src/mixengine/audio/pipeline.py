@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from .. import align, arrange
-from ..analysis import analysis, matching, vocal_dna
+from ..analysis import analysis, lyrics, matching, vocal_dna
 from ..arrange import automation
 from ..core import audio_io, questions as questions_mod
 from . import (critic, dsp, master, mixer, separation, space, timing,
@@ -139,6 +139,51 @@ def _render_notes(vdna: dict, tinfo: dict) -> List[str]:
     return notes
 
 
+
+
+def _shifted_lyrics(vdna: dict, tinfo: dict, sr: int,
+                    n_samples: int) -> Optional[dict]:
+    """The take's transcript, moved to where the vocal now sits.
+
+    Word times were measured on the uploaded take. Between then and the
+    arrangement the vocal is stretched to the beat's tempo and moved onto
+    a bar line, and a word carrying its original time would be attributed
+    to whichever phrase happens to be there instead. Both moves are
+    recorded, and both are affine.
+    """
+    doc = vdna.get("lyrics")
+    if not doc:
+        return None
+    scale = 1.0
+    ts = tinfo.get("time_stretch") or {}
+    try:
+        r = float(ts.get("ratio") or 1.0)
+        if np.isfinite(r) and r > 0:
+            scale = r
+    except (TypeError, ValueError):
+        pass
+    align = tinfo.get("alignment") or {}
+    offset = 0.0
+    for key, src in (("offset_s", align),
+                     ("moved_s", align.get("placement") or {}),
+                     ("nudge_s", align)):
+        try:
+            v = float(src.get(key) or 0.0)
+        except (TypeError, ValueError):
+            v = 0.0
+        if np.isfinite(v):
+            offset += v
+    shifted = lyrics.shift_times(doc, scale=scale, offset_s=offset)
+    # A map that puts every word past the end of the audio means one of
+    # the recorded moves was not what this function assumed. Better no
+    # lyrics than lyrics attributed to the wrong phrases.
+    words = lyrics.word_onsets(shifted)
+    if words.size and words.min() > n_samples / float(sr):
+        log.warning("lyric times fall past the end of the vocal "
+                    "(scale %.4f, offset %+.2fs); arranging without them",
+                    scale, offset)
+        return None
+    return shifted
 
 
 def _build_plan(vocal_audio: np.ndarray, beat_audio: np.ndarray, sr: int,
@@ -360,8 +405,15 @@ def render_variant(vocal_audio: np.ndarray, sr: int, vdna: dict,
                       "note": render_plan.alignment.reason}
         log.info("  placement: %s", render_plan.alignment.reason)
     else:
+        # The transcript's word times were measured before the stretch,
+        # so they are scaled by it and not yet moved: the move is what
+        # this call is deciding.
+        stretched_lyrics = lyrics.shift_times(
+            vdna.get("lyrics"),
+            scale=float((tinfo.get("time_stretch") or {}).get("ratio") or 1.0))
         v, align_info = transform.align_to_downbeat(
-            v, sr, phrases, downbeats_s, beats_s, vocal_ones=vocal_ones)
+            v, sr, phrases, downbeats_s, beats_s, vocal_ones=vocal_ones,
+            line_starts_s=lyrics.line_starts(stretched_lyrics))
         # ── 3c. Structural placement ──────────────────────────────────────
         # The alignment above settles the bar phase; this settles the bar.
         # A take left at the top of the beat sits inside its intro and the
@@ -519,7 +571,8 @@ def render_variant(vocal_audio: np.ndarray, sr: int, vdna: dict,
         v, sr, phrases, genre=bdna.get("genre"), performance_type=perf,
         downbeats=downbeats_s, beats=beats_s,
         beat_sections=[Section.from_dict(s) for s in (bdna.get("sections") or [])],
-        allow_layers=profile.stereo_double)
+        allow_layers=profile.stereo_double,
+        lyrics_doc=_shifted_lyrics(vdna, tinfo, sr, len(v)))
     tinfo["arrangement"] = song_plan.to_dict()
     if song_plan.structure is not None:
         log.info("  arrangement: %s", _describe_plan(song_plan))

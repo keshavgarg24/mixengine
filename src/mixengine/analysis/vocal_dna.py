@@ -20,7 +20,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from . import analysis
+from . import analysis, lyrics
 from ..core import audio_io
 from ..core.capabilities import CAPS, improvement_over
 from ..audio import dsp, separation, debleed
@@ -112,6 +112,10 @@ def extract(path: str,
     # ── Stage 2: restoration ──────────────────────────────────────────────
     quality_post = audio_io.probe_quality(y, sr, path)
     noise_in = analysis.noise_verdict(y, sr, analysis.detect_phrases(y, sr))
+    # Kept before restoration, because restoration is what the transcriber
+    # cannot survive -- see `lyrics.prepare`. Held as mono at 16 kHz, so
+    # the second copy costs a twelfth of the take.
+    asr_audio = lyrics.prepare(y, sr) if CAPS.whisper else None
     y, restore_report = separation.condition_vocal(y, sr, quality_post,
                                                    separated=separated)
     log.info("  restoration: %s", {k: v for k, v in restore_report.items() if v})
@@ -135,6 +139,13 @@ def extract(path: str,
     if voice:
         log.info("  voice: %s (speech in %.0f%% of the phrases)",
                  voice["verdict"], voice["speech_in_phrases"] * 100)
+    # What was said, and when. Skipped when the voice model heard no
+    # voice: there are no words in an instrumental, and the transcriber
+    # would spend a minute inventing some.
+    words = None
+    if asr_audio is not None and (not voice
+                                  or voice.get("verdict") != "no_voice"):
+        words = lyrics.transcribe(asr_audio, lyrics.ASR_SR)
     noise_out = analysis.noise_verdict(y, sr, phrases)
     noise = {"verdict": noise_out["verdict"],
              "snr_db": noise_out["snr_db"],
@@ -329,6 +340,8 @@ def extract(path: str,
         "performance_span": span,
         "noise": noise,
         "voice": voice,
+        "lyrics": words,
+        "intelligibility": lyrics.intelligibility(words),
 
         # -- Symbolic -----------------------------------------------------
         "duration_s": round(duration, 2),
@@ -540,6 +553,12 @@ def can_improve(doc: Optional[dict],
         return "analysed before the take was judged for noise and lead-in"
     if CAPS.silero_vad and "voice" not in doc:
         return "analysed before the take was checked for a voice"
+    # A take with a voice in it and no transcript was analysed before a
+    # transcriber was installed. The hook, the bar phase and the
+    # intelligibility check all read the transcript.
+    if CAPS.whisper and "lyrics" not in doc \
+            and (doc.get("voice") or {}).get("verdict") != "no_voice":
+        return "analysed before the words were transcribed"
     return improvement_over(doc.get("analysis_backends"),
                             want_separation=bool(doc.get("needs_separation")),
                             now=now)

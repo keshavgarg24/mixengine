@@ -421,6 +421,12 @@ class TestCrepeDecoder(unittest.TestCase):
         _, hz = _decode_viterbi_precise(self._logits(a440))
         err = 1200.0 * abs(math.log2(float(hz[0, 0]) / 440.0))
         self.assertLess(err, 1.0, f"{float(hz[0, 0]):.2f} Hz is {err:.1f} cents off")
+        # The stock decoder dithers randomly, so its error is a draw and
+        # not a fact about either decoder. Seeded, because on roughly one
+        # run in a hundred the dither lands nearer the true pitch than our
+        # 0.15-cent error and fails a comparison that is otherwise sound.
+        import torch
+        torch.manual_seed(0)
         _, stock = torchcrepe.decode.viterbi(self._logits(a440))
         self.assertGreater(1200.0 * abs(math.log2(float(stock[0, 0]) / 440.0)), err)
 
