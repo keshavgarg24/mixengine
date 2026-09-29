@@ -437,3 +437,61 @@ class TestCrepeDecoder(unittest.TestCase):
         _, b = _decode_viterbi_precise(logits.clone())
         self.assertTrue(bool((a == b).all()))
         self.assertTrue(bool((a[0, 0] == a[0]).all()), "identical frames must agree")
+
+
+class TestPhrasesDoNotMoveWhenPaddingDoes(unittest.TestCase):
+    """Where a phrase is cannot depend on what is padded around it.
+
+    The engine pads constantly: alignment shifts the take, placement moves
+    it whole bars, the beat fit extends it, and phrases are re-detected
+    after each. The activity threshold is found with Otsu over the level
+    histogram, and Otsu weighs by mass -- so leading silence used to drag
+    the split downward until background read as voice. Measured on a real
+    take, 4.8 s of padding moved the first phrase 1.85 s earlier and
+    changed how many phrases were found.
+
+    Phrases are the unit that level riding, placement, balance measurement
+    and arrangement all work in, so this is load-bearing for every one of
+    them.
+    """
+
+    SR = 22050
+
+    def _take(self):
+        """Four spoken-length bursts over a quiet room floor."""
+        rng = np.random.default_rng(7)
+        n = self.SR * 8
+        t = np.arange(n) / self.SR
+        y = 0.002 * rng.standard_normal(n).astype(np.float32)   # room tone
+        for start in (1.0, 3.0, 4.6, 6.4):
+            a = int(start * self.SR)
+            b = a + int(1.0 * self.SR)
+            seg = t[a:b] - t[a]
+            burst = sum(np.sin(2 * np.pi * 180.0 * h * seg) / h
+                        for h in (1, 2, 3))
+            y[a:b] += (0.25 * burst * np.hanning(b - a)).astype(np.float32)
+        return y[:, None]
+
+    def test_leading_silence_does_not_move_the_phrases(self):
+        from mixengine.analysis.analysis import detect_phrases
+        v = self._take()
+        base = detect_phrases(v, self.SR)
+        self.assertGreaterEqual(len(base), 3, "fixture should have phrases")
+        for pad_s in (1.0, 4.8, 9.6, 20.0):
+            pad = np.zeros((int(pad_s * self.SR), 1), dtype=np.float32)
+            got = detect_phrases(np.vstack([pad, v]), self.SR)
+            self.assertEqual(len(got), len(base),
+                             f"{pad_s}s of padding changed the phrase count")
+            drift = (got[0][0] - int(pad_s * self.SR)) - base[0][0]
+            self.assertLess(abs(drift) / self.SR, 0.02,
+                            f"{pad_s}s of padding moved the first phrase "
+                            f"{drift / self.SR:+.3f}s")
+
+    def test_trailing_silence_does_not_move_the_phrases(self):
+        from mixengine.analysis.analysis import detect_phrases
+        v = self._take()
+        base = detect_phrases(v, self.SR)
+        pad = np.zeros((int(15.0 * self.SR), 1), dtype=np.float32)
+        got = detect_phrases(np.vstack([v, pad]), self.SR)
+        self.assertEqual(len(got), len(base))
+        self.assertEqual(got[0][0], base[0][0])

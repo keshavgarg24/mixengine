@@ -320,8 +320,18 @@ def render_variant(vocal_audio: np.ndarray, sr: int, vdna: dict,
                      if beat_bar_s > 0 and len(beats_s) >= 2 else 4)
     if beat_bar_s > 0 and (render_plan is None
                            or render_plan.alignment.method != "single_offset"):
-        ones = transform.vocal_downbeats(v, sr, beat_bar_s,
-                                         beats_per_bar=max(1, beats_per_bar))
+        # Read the take's bar grid the way that reads it best. A file
+        # whose transients were damaged -- saved quiet in 16 bits, or
+        # pushed into a limiter -- gives the tracker a lattice that is
+        # not merely a beat out but incoherent, and says so with a
+        # confidence near zero. Another conditioning of the same audio
+        # recovers it; a take that already reads well costs nothing.
+        grid_read = transform.best_vocal_grid(
+            v, sr, beat_bar_s, downbeats_s,
+            beats_per_bar=max(1, beats_per_bar))
+        ones = grid_read["ones"]
+        tinfo["vocal_grid"] = {k: grid_read[k] for k in
+                               ("confidence", "conditioning", "tried")}
         grid_ratio = (transform.grid_tempo_ratio(ones, beat_bar_s)
                       if ones is not None else None)
         if ones is not None and grid_ratio is not None:

@@ -842,6 +842,23 @@ def voice_activity_threshold(r_db: np.ndarray) -> Tuple[float, float]:
     if finite.size < 8:
         return -40.0, -50.0
 
+    # Digital silence is not background, it is the absence of a recording,
+    # and it must not vote on where the voice ends and the room begins.
+    #
+    # This matters because the engine pads constantly: alignment shifts the
+    # take, placement moves it whole bars, the beat fit extends it. Every
+    # one of those adds silent frames, and Otsu weighs the histogram by
+    # mass -- so padding drags the split downward until material that read
+    # as background reads as voice. Measured on one take, 4.8 s of leading
+    # silence moved the first phrase 1.85 s earlier and changed how many
+    # phrases were found at all. Phrases are the unit that level riding,
+    # placement, balance and arrangement all work in, so a detector that
+    # answers differently depending on what is padded around it destabilises
+    # every one of them.
+    voiced = finite[finite > SILENCE_FLOOR_DB]
+    if voiced.size >= 8:
+        finite = voiced
+
     lo, hi = float(np.percentile(finite, 1)), float(np.percentile(finite, 99))
     if hi - lo < 6.0:
         # Essentially constant level: no silence to find. Sit just under the

@@ -307,6 +307,103 @@ def _tempo_window(bar_s: float, beats_per_bar: int
     return lo, hi
 
 
+def _grid_raw(v: np.ndarray, sr: int) -> np.ndarray:
+    return v
+
+
+def _grid_flattened(v: np.ndarray, sr: int) -> np.ndarray:
+    """The take with its dynamics flattened, for the tracker only.
+
+    The downbeat tracker reads transients, and a file can lose the shape
+    of its transients while losing nothing a listener would notice: a
+    take saved quiet in 16 bits comes back with its resolution gone, and
+    one pushed into a limiter comes back with its peaks squared off.
+    Measured, both dropped the tracker's grid confidence to 0.18 against
+    a 0.60 gate, while their signal-to-noise stayed at 42 dB -- so this
+    is not noise, and no amount of denoising addresses it.
+
+    Compressing hard and normalising presents every syllable at the same
+    size, which is the one thing the tracker needs and the damage took
+    away. On both failing files it restored confidence to 0.81.
+    """
+    peak = float(np.abs(v).max())
+    if peak <= 1e-9:
+        return v
+    out, _ = dsp.auto_compressor(v / peak * 0.7, sr, target_gr_db=12.0,
+                                 ratio=6.0, attack_ms=3.0, release_ms=80.0)
+    peak = float(np.abs(out).max())
+    return out / peak * 0.7 if peak > 1e-9 else out
+
+
+def _grid_percussive(v: np.ndarray, sr: int) -> np.ndarray:
+    """The take's attacks alone, with its sustained tone removed.
+
+    A third opinion for the cases the other two both read badly. Consonants
+    and breath are what mark a bar; the vowel between them is not.
+    """
+    out = dsp.highpass(v, sr, 1200.0, order=2)
+    return _grid_flattened(out, sr)
+
+
+# Tried in order, and stopped at the first reading that clears the gate,
+# so a take the tracker already reads well costs nothing extra.
+GRID_CONDITIONINGS = (("raw", _grid_raw),
+                      ("flattened", _grid_flattened),
+                      ("percussive", _grid_percussive))
+
+
+def best_vocal_grid(vocal: np.ndarray, sr: int, bar_s: float,
+                    beat_downbeats: np.ndarray,
+                    beats_per_bar: int = 4) -> Dict[str, Any]:
+    """The vocal's bar grid, read the way that reads it best.
+
+    One tracker run on the file as it arrives is what the engine did, and
+    it is right about three files in five. The two it is wrong about it is
+    wrong about completely -- not a beat out, but a different lattice
+    entirely, at a confidence of 0.18 that correctly says so and was only
+    ever used to fall back to a weaker method.
+
+    Confidence is how tightly the vocal's bar-ones sit against the beat's
+    grid, so it measures whether a reading found real structure rather
+    than how loud the take was. That makes it a fair way to choose between
+    readings of the same audio: try another conditioning, keep whichever
+    scores highest. It can only replace a reading that already failed, so
+    a take that reads well is untouched and costs one tracker run as
+    before.
+    """
+    grid = np.asarray(beat_downbeats, dtype=np.float64)
+    best: Dict[str, Any] = {"ones": None, "shift": 0.0, "confidence": 0.0,
+                            "conditioning": None, "tried": []}
+    if bar_s <= 0 or grid.size < 2:
+        return best
+    v = dsp.as_2d(vocal)
+    for label, fn in GRID_CONDITIONINGS:
+        try:
+            ones = vocal_downbeats(fn(v, sr), sr, bar_s,
+                                   beats_per_bar=beats_per_bar)
+        except Exception as e:                           # noqa: BLE001
+            log.debug("grid conditioning %s failed (%s)", label, e)
+            continue
+        if ones is None or ones.size == 0:
+            continue
+        shift, conf = _grid_alignment(ones, grid, bar_s)
+        best["tried"].append({"conditioning": label,
+                              "confidence": round(conf, 3),
+                              "bars": int(ones.size)})
+        if conf > best["confidence"]:
+            best.update({"ones": ones, "shift": float(shift),
+                         "confidence": float(conf), "conditioning": label})
+        if conf >= VOCAL_GRID_CONFIDENCE:
+            break
+    if best["conditioning"] and best["conditioning"] != "raw":
+        log.info("  grid: the take as it arrived read at %.2f; %s read it at "
+                 "%.2f, so that is the grid used",
+                 next((t["confidence"] for t in best["tried"]
+                       if t["conditioning"] == "raw"), 0.0),
+                 best["conditioning"], best["confidence"])
+    return best
+
+
 def vocal_downbeats(vocal: np.ndarray, sr: int, bar_s: float,
                     max_seconds: float = 150.0,
                     beats_per_bar: int = 4) -> Optional[np.ndarray]:
