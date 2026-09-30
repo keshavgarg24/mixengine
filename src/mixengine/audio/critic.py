@@ -31,6 +31,7 @@ from ..core import audio_io
 from . import dsp, timing
 from ..config import CFG, GenreProfile
 from ..core.keys import Key
+from ..core.capabilities import CAPS
 
 log = logging.getLogger("mixengine.critic")
 
@@ -146,6 +147,7 @@ def evaluate(mix: np.ndarray, sr: int, variant: str,
         repair={"lufs_target": -1.0}))
 
     lufs = audio_io.integrated_lufs(y, sr)
+    by_policy = False          # the master chose to land under target
     if np.isfinite(lufs):
         target = profile.lufs_target
         delta = abs(lufs - target)
@@ -153,17 +155,30 @@ def evaluate(mix: np.ndarray, sr: int, variant: str,
         # A master that stops short of its target with the true peak
         # already on the ceiling is following the engine's own policy
         # (`MasterConfig.max_limiting_db`): the last decibels were there
-        # only by crushing the dynamics, and it declined. That is
-        # information, not a defect, and it is recognisable from the audio
-        # alone. Short of target with headroom left is a real miss.
+        # only by crushing the dynamics, and it declined.
+        #
+        # The master records that decision, so it is read rather than
+        # inferred. Inferring it from a fixed window meant the two numbers
+        # had to be kept in step by hand and were not: lowering the
+        # limiting budget to 3.5 dB let masters legitimately land further
+        # under target than the window allowed, and the critic began
+        # failing takes for obeying a policy the engine had just applied
+        # -- a dynamic vocal delivered at -15.8 LUFS with DR 16.5, exactly
+        # as intended, scored 80% for it.
+        #
+        # The window survives as the fallback for a caller that passes no
+        # report, where inferring is all there is.
         on_ceiling = tp >= c.max_true_peak_db - c.lufs_ceiling_window_db
+        declined = (master_report or {}).get("loudness_converged") is False
         within_grace = (0.0 < shortfall
                         <= c.lufs_tolerance_db + c.lufs_ceiling_grace_db)
+        by_policy = shortfall > 0 and on_ceiling and (
+            declined if master_report else within_grace)
         if delta <= c.lufs_tolerance_db:
             r.gates.append(Gate(
                 "loudness", True, round(lufs, 2), target, "warning",
                 f"{lufs:.1f} LUFS is {delta:.1f} dB from the {target:.1f} target"))
-        elif on_ceiling and within_grace:
+        elif by_policy:
             r.gates.append(Gate(
                 "loudness", True, round(lufs, 2), target, "info",
                 f"{lufs:.1f} LUFS, {shortfall:.1f} dB under the {target:.1f} "
@@ -260,8 +275,14 @@ def evaluate(mix: np.ndarray, sr: int, variant: str,
 
     loudness_score = 1.0
     if np.isfinite(lufs):
-        loudness_score = float(np.clip(
-            1.0 - abs(lufs - profile.lufs_target) / 6.0, 0.0, 1.0))
+        # A shortfall the master chose is not scored as a miss, for the
+        # same reason the gate does not fail it: the engine declined the
+        # last decibels to keep the dynamics, and marking its own policy
+        # down leaves a correct master unable to score well. Being *over*
+        # target is always a miss -- nothing in the chain intends that.
+        miss = (max(0.0, lufs - profile.lufs_target) if by_policy
+                else abs(lufs - profile.lufs_target))
+        loudness_score = float(np.clip(1.0 - miss / 6.0, 0.0, 1.0))
 
     r.sub_scores = {
         "gates": round(gate_score, 4),
@@ -448,20 +469,45 @@ def _perceptual_scores(y: np.ndarray, sr: int) -> Dict[str, float]:
     logging which variant users actually pick.
     """
     out: Dict[str, float] = {}
+    if not CAPS.audiobox:
+        return out
     try:
-        import audiobox_aesthetics  # noqa: F401
+        import torch
         from audiobox_aesthetics.infer import initialize_predictor
-        predictor = initialize_predictor()
-        mono = dsp.to_mono(y)
-        res = predictor.forward([{"path": mono, "sample_rate": sr}])
+        predictor = _aesthetics_predictor(initialize_predictor)
+        # A torch tensor shaped (channels, samples), which the predictor
+        # resamples and then averages down to mono itself. Handing it a
+        # numpy array instead looked reasonable and silently produced
+        # nothing at all: torchaudio's resampler builds its kernel with
+        # the array's own dtype, and a numpy dtype is not a torch one, so
+        # every call raised inside the `except` below and the scorer was
+        # simply never heard from.
+        wav = torch.from_numpy(np.ascontiguousarray(dsp.as_2d(y).T)).float()
+        res = predictor.forward([{"path": wav, "sample_rate": sr}])
         if res:
             d = res[0]
             out["production_quality"] = float(d.get("PQ", 0)) / 10.0
             out["content_enjoyment"] = float(d.get("CE", 0)) / 10.0
             out["production_complexity"] = float(d.get("PC", 0)) / 10.0
-    except Exception:
-        pass
+    except Exception as e:                                   # noqa: BLE001
+        # Said out loud. Swallowed silently, a scorer that was installed
+        # and broken looked exactly like one that was absent, and this
+        # one was broken for as long as it had been here.
+        log.warning("perceptual scoring failed (%s); scoring without it", e)
     return out
+
+
+# The model is a few hundred megabytes and takes seconds to construct.
+# Renders come in batches, so it is built once per process rather than
+# once per render.
+_PREDICTOR = None
+
+
+def _aesthetics_predictor(factory):
+    global _PREDICTOR
+    if _PREDICTOR is None:
+        _PREDICTOR = factory()
+    return _PREDICTOR
 
 
 # ═════════════════════════════════════════════════════════════════════════════
