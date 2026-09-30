@@ -303,6 +303,44 @@
 .ask-actions { display: flex; align-items: center; gap: var(--s3); margin-top: var(--s4); }
 .ask-actions .go { width: auto; padding-left: var(--s6); padding-right: var(--s6); }
 
+/* ── Where the vocal was put ──────────────────────────────────────── */
+/* Placement is the one judgement the engine can be confidently wrong
+   about, so the panel states its own confidence and carries the fix. */
+
+.placement {
+  margin-top: var(--s4);
+  padding: var(--s3) var(--s4);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.placement.is-unsure { border-color: var(--amber-dim); }
+.placement-head {
+  display: flex; align-items: baseline; gap: var(--s3);
+  justify-content: space-between;
+}
+.placement-where { margin: 0; font-size: var(--fs-md); line-height: 1.6; }
+.placement-conf { color: var(--ink-3); font-size: var(--fs-xs); white-space: nowrap; }
+.placement.is-unsure .placement-conf { color: var(--amber); }
+.placement-why { margin: var(--s2) 0 0; color: var(--ink-3); font-size: var(--fs-xs); line-height: 1.5; }
+
+.nudge {
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2);
+  margin-top: var(--s3); padding-top: var(--s3);
+  border-top: 1px solid var(--line-soft);
+}
+.nudge-label { color: var(--ink-2); font-size: var(--fs-sm); margin-right: var(--s1); }
+.nudge-btn {
+  font: inherit; font-size: var(--fs-sm); color: var(--ink-2);
+  padding: 4px 10px; cursor: pointer;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.nudge-btn:hover:not(:disabled) { color: var(--ink); border-color: var(--accent-dim); }
+.nudge-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.nudge-btn:disabled { opacity: .45; cursor: default; }
+.nudge-btn.is-on { color: var(--amber); border-color: var(--amber-dim); }
+
 /* ── Narrow screens ───────────────────────────────────────────────── */
 
 @media (max-width: 680px) {
@@ -312,4 +350,6 @@
   .plan-list li { grid-template-columns: 1fr; gap: 0; }
   .ask-actions { flex-direction: column; align-items: stretch; }
   .ask-actions .go { width: 100%; }
+  .placement-head { flex-direction: column; gap: var(--s1); }
+  .nudge { gap: 6px; }
 }

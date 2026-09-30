@@ -173,9 +173,74 @@ function preparedNotes() {
           ...(b.repairs || []), ...(b.warnings || [])];
 }
 
+/**
+ * Where the vocal was put, and how sure the engine was about it.
+ *
+ * Every other decision here is measured. This one partly is not: whether
+ * a first line is a pickup into the bar or lands on it is a musical
+ * reading, not a fact in the audio, and for a take that was never
+ * recorded to this beat the engine is choosing. It reports the confidence
+ * its own bar-grid reading had, and when that reading failed it says so
+ * rather than presenting a guess as a measurement.
+ *
+ * The nudge sits here rather than in Treatment because this is the moment
+ * the person can hear that it is wrong.
+ */
+export function paintPlacement(render) {
+  const t = render.transform || {};
+  const align = t.alignment || {};
+  const place = align.placement || {};
+  const grid = t.vocal_grid || {};
+  const panel = $('#placement');
+
+  const where = [];
+  if (place.method === 'section_entry' && place.section) {
+    where.push(`The first line lands where the beat's ${place.section} arrives, at ${fmt(place.entry_s)}s.`);
+  } else if (align.method === 'measured_offset') {
+    where.push('The take was recorded to this beat, so it was left where it was performed.');
+  } else if (place.reason) {
+    where.push(cap(place.reason) + '.');
+  } else {
+    where.push('The vocal was placed on the beat’s bar lines.');
+  }
+
+  // A take recorded to this beat needs no grid reading; anything else
+  // rests on one, and the engine knows how well that reading went.
+  const locked = align.method === 'measured_offset';
+  const conf = Number(grid.confidence);
+  const unsure = !locked && (!Number.isFinite(conf) || conf < 0.6);
+  panel.classList.toggle('is-unsure', unsure);
+
+  let why = '';
+  if (locked) {
+    why = 'Measured against the beat it was recorded over, so this is not a guess.';
+  } else if (unsure) {
+    why = 'The take’s own bar grid could not be read clearly, so where its bars fall is the engine’s best reading rather than a measurement. If it sounds off the bar, move it.';
+  } else {
+    why = `The take’s own bar grid read clearly${grid.conditioning && grid.conditioning !== 'raw'
+      ? ` (after the file was re-read as ${esc(grid.conditioning)}, the take as it arrived being too damaged to track)` : ''}, so its bars were laid over the beat’s.`;
+  }
+
+  $('#placement-where').textContent = where.join(' ');
+  $('#placement-conf').textContent = locked ? 'recorded to this beat'
+    : Number.isFinite(conf) ? `grid ${Math.round(conf * 100)}%` : 'no grid found';
+  $('#placement-why').textContent = why;
+
+  const applied = Number(align.nudge_beats) || 0;
+  for (const b of $('#placement').querySelectorAll('.nudge-btn')) {
+    b.classList.toggle('is-on', Number(b.dataset.nudge) === applied && applied !== 0);
+    b.disabled = false;
+  }
+  panel.hidden = false;
+}
+
+const fmt = n => (Number(n) || 0).toFixed(1);
+const cap = s => String(s || '').replace(/^./, c => c.toUpperCase());
+
 function paintResult(render) {
   $('#run').hidden = true;
   $('#result').hidden = false;
+  paintPlacement(render);
   paintNotes('result-notes', [...preparedNotes(), ...(render.notes || [])]);
   $('#result-score').textContent = `${render.score_pct}% · ${clock(render.duration_s)}`;
 
@@ -327,7 +392,12 @@ async function submitAnswers(e) {
   await renderPrepared(answers);
 }
 
+// Kept so a nudge re-renders the same decisions with one thing moved,
+// rather than dropping the answers the person already gave.
+let lastAnswers = {};
+
 async function renderPrepared(answers) {
+  lastAnswers = { ...answers };
   beginRun();
   showStage('Starting the render…', 8);
 
@@ -400,6 +470,19 @@ export function init() {
     $('#result').hidden = true;
     $('#treatment').open = true;
     $('#treatment').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  });
+
+  // Nudging re-renders the same decisions with the vocal moved. The files
+  // are already analysed, so this costs a render and not an intake.
+  on($('#placement'), 'click', e => {
+    const btn = e.target.closest('.nudge-btn');
+    if (!btn || !prepared) return;
+    const step = Number(btn.dataset.nudge) || 0;
+    const applied = (Number(lastAnswers.nudge) || 0) + step;
+    for (const b of $('#placement').querySelectorAll('.nudge-btn')) b.disabled = true;
+    renderPrepared(applied === 0
+      ? Object.fromEntries(Object.entries(lastAnswers).filter(([k]) => k !== 'nudge'))
+      : { ...lastAnswers, nudge: String(applied) });
   });
 
   // Redraw on resize: the canvas is sized in device pixels, so a bare

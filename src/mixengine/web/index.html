@@ -204,6 +204,29 @@
     </div>
     <audio id="player" controls preload="metadata"></audio>
     <div class="gates" id="gates"></div>
+
+    <!-- Where the vocal was put, how sure the engine was, and the one
+         control that fixes it. Placement is the only judgement here the
+         engine can be confidently wrong about: whether a first line is a
+         pickup into the bar or lands on it is not in the audio. Saying so
+         and making the fix a click beats guessing silently. -->
+    <div class="placement" id="placement" hidden>
+      <div class="placement-head">
+        <p class="placement-where" id="placement-where"></p>
+        <span class="placement-conf mono" id="placement-conf"></span>
+      </div>
+      <p class="placement-why" id="placement-why"></p>
+      <div class="nudge" role="group" aria-label="Move the vocal">
+        <span class="nudge-label">Sits off the bar?</span>
+        <button class="nudge-btn" data-nudge="-4" type="button">&minus;1 bar</button>
+        <button class="nudge-btn" data-nudge="-1" type="button">&minus;1 beat</button>
+        <button class="nudge-btn" data-nudge="-0.5" type="button">&minus;&frac12;</button>
+        <button class="nudge-btn" data-nudge="0.5" type="button">+&frac12;</button>
+        <button class="nudge-btn" data-nudge="1" type="button">+1 beat</button>
+        <button class="nudge-btn" data-nudge="4" type="button">+1 bar</button>
+      </div>
+    </div>
+
     <ul class="notes" id="result-notes" hidden></ul>
     <div class="result-actions">
       <a class="btn" id="download" download>Download</a>

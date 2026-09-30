@@ -133,6 +133,9 @@ def _render_notes(vdna: dict, tinfo: dict) -> List[str]:
         notes.append("the beat was padded with silence from %.0f s to %.0f s "
                      "for the vocal's tail" % (float(orig or 0),
                                                float(bf.get("target_len_s") or 0)))
+    plan = (tinfo.get("tuning") or {}).get("plan") or {}
+    if plan.get("n_tuned"):
+        notes.append("the vocal was tuned: %s" % plan.get("summary", ""))
     if vdna.get("performance_source") == "user":
         notes.append("treated as %s, as you said"
                      % str(vdna.get("performance_type") or "").replace("_", " "))

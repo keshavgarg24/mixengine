@@ -46,7 +46,8 @@ from ..core.types import (
     ChordEvent, KeyRegion, Note, Section,
     ATTACK_SLIDE, RELEASE_FALL,
 )
-from ..musical import salience, theory
+from ..musical import theory
+from .. import perform
 
 log = logging.getLogger("mixengine.tuning")
 
@@ -179,52 +180,44 @@ def tune_musical(y: np.ndarray, sr: int, notes: Sequence[Note],
     corrections: List[float] = []
     chord_hits = 0
 
-    for n in notes:
+    # What to change is decided in `perform`, which touches no audio; this
+    # loop only carries it out. Keeping the two apart is what lets the same
+    # decision be inspected note by note, tested without a render, and --
+    # later -- realised by a voice model rather than a pitch-shifter.
+    plan = perform.pitch_targets(
+        notes, context, strength=base_strength,
+        max_correction_semitones=max_correction_semitones)
+
+    for n, target in zip(notes, plan):
         start = int(n.start * sr)
         end = min(int(n.end * sr), len(v))
         if end <= start or start >= len(v):
             continue
 
-        # Gestures are performance, not error.
-        if n.is_transition:
+        if target.decision == perform.KEPT_GESTURE:
             rep.notes_skipped_transition += 1
             continue
-        if n.is_melisma:
+        if target.decision == perform.KEPT_MELISMA:
             rep.notes_skipped_melisma += 1
             continue
-
-        chord = context.chord_at(n.start)
-        key = context.key_at(n.start)
-        if chord is not None:
+        if target.chord is not None:
             chord_hits += 1
-
-        # How much scrutiny is this note under?
-        sal = salience.pitch_salience(
-            n, section=context.section_at(n.start),
-            is_cadence=context.is_cadence(n.start),
-            tessitura_high_midi=context.tessitura_high_midi,
-            is_exposed_texture=context.sparse_backing)
-
-        exposed = sal >= 1.0
-        candidates = theory.tuning_candidates(chord, key, context.genre,
-                                              exposed=exposed)
-        target = theory.nearest_target(n.midi, candidates,
-                                       max_semitones=max_correction_semitones)
-        if target is None:
+        if target.decision == perform.KEPT_TOO_FAR:
             # Too far from any legal target to be a tuning error. Forcing it
             # would produce a confident wrong answer; leaving it alone is
             # the honest outcome.
             rep.notes_refused_far += 1
             continue
 
+        key = context.key_at(n.start)
         if key is not None and context.genre:
             from ..musical.theory import BLUES_FAMILY, blue_notes
             g = str(context.genre).lower().replace(" ", "_")
             if g in BLUES_FAMILY and (int(round(n.midi)) % 12) in blue_notes(key.pc):
                 rep.blue_notes_preserved += 1
 
-        delta = (target - n.midi) * float(np.clip(base_strength * sal, 0.0, 0.95))
-        if abs(delta) < 0.04:                      # under ~4 cents: inaudible
+        delta = target.midi - n.midi
+        if abs(delta) * 100.0 < perform.INAUDIBLE_CENTS:
             continue
 
         seg = v[start:end]
@@ -257,7 +250,13 @@ def tune_musical(y: np.ndarray, sr: int, notes: Sequence[Note],
                  rep.notes_considered, rep.mean_correction_cents,
                  rep.chord_aware_fraction * 100.0,
                  rep.notes_skipped_transition + rep.notes_skipped_melisma)
-    return out.astype(np.float32), rep.to_dict()
+    # The plan travels with the report so the interface can say what was
+    # done to each note rather than quoting an average, and so a later
+    # renderer can read the same decision this loop just carried out.
+    report = rep.to_dict()
+    report["plan"] = perform.PerformancePlan(
+        targets=plan, tuning_strength=float(base_strength)).to_dict()
+    return out.astype(np.float32), report
 
 
 def notes_from_dna(note_dicts: Sequence[dict],
