@@ -110,19 +110,30 @@ def separate(path: str, out_dir: str, want: str = "all",
              model: Optional[str] = None) -> Dict[str, str]:
     """Separate `path` into stems. Returns {stem_name: file_path}.
 
+    `want` names a single stem to return, or "all". Both backends compute
+    every stem in one pass, so asking for one saves no time; it says which
+    the caller actually needs. It was accepted and ignored, so a caller
+    asking for the vocal got the whole set back and had to know to pick
+    through it.
+
     Never raises -- on total failure returns an empty dict and the caller
     proceeds without stems (degraded but functional).
     """
     os.makedirs(out_dir, exist_ok=True)
 
+    def _wanted(stems: Dict[str, str]) -> Dict[str, str]:
+        if want == "all" or want not in stems:
+            return stems
+        return {want: stems[want]}
+
     if CAPS.audio_separator:
         out = _separate_roformer(path, out_dir, model)
         if out:
-            return out
+            return _wanted(out)
     if CAPS.demucs:
         out = _separate_demucs(path, out_dir)
         if out:
-            return out
+            return _wanted(out)
 
     log.warning("no separation backend available for %s", os.path.basename(path))
     return {}

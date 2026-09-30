@@ -81,6 +81,12 @@ def _render_notes(vdna: dict, tinfo: dict) -> List[str]:
     plain language, and says nothing a stage did not do.
     """
     notes: List[str] = list(vdna.get("repairs") or [])
+    bleed = vdna.get("debleed") or {}
+    if bleed.get("applied"):
+        notes.append("the beat was playing in the room when this was "
+                     "recorded and came through the microphone; it was "
+                     "cancelled out of the vocal by %.0f dB"
+                     % float(bleed.get("cancellation_db") or 0.0))
     r = vdna.get("restoration") or {}
     if r.get("hum_lines_hz"):
         notes.append("a hum at %s Hz was notched out of the vocal"

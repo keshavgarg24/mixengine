@@ -8,11 +8,22 @@ recovered from the audio itself.
 
 The method is repetition, which is the oldest and most reliable signal in
 structural analysis of popular music: the hook is the material that comes
-back. Beat-synchronous chroma compared phrase to phrase, following
-Bartsch & Wakefield's chroma-similarity approach to refrain finding, with
-pitch-contour and duration features added because two phrases of a rap
-verse have near-identical chroma and are told apart by their melodic shape
-rather than their harmony.
+back. Chroma averaged over each phrase and compared phrase to phrase,
+following Bartsch & Wakefield's chroma-similarity approach to refrain
+finding, with pitch-contour and duration features added because two
+phrases of a rap verse have near-identical chroma and are told apart by
+their melodic shape rather than their harmony.
+
+Bartsch & Wakefield aggregate chroma *per beat* rather than over a fixed
+hop, which normalises for tempo so that two repeats line up frame by
+frame. This does not, and `_features` still takes the `beats` it would
+need: the phrase-mean chroma here is tempo-invariant for a different
+reason -- it collapses the whole phrase to one vector, so nothing has to
+line up -- and the melodic contour, which is the feature that actually
+separates two rap verses, is already resampled to a fixed sixteen points.
+Beat-synchronous frames would buy a finer comparison than either, and
+changing it moves every similarity value against a threshold tuned to the
+current ones, so it is a measured change rather than a free one.
 
 The classifier is deliberately conservative. Labelling a verse as a hook
 puts doubles, harmonies and a lift in the wrong place, which is a worse
