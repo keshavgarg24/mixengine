@@ -54,6 +54,14 @@ log = logging.getLogger("mixengine.align")
 # Below this, nothing downstream is worth doing.
 MIN_ONSETS = 6
 
+# How near a phrase's start an onset must fall to count as its entry, and
+# how much more the entry is worth than a syllable inside the line. The
+# window matches `salience.timing_salience`, which uses the same idea for
+# every other stage; the multiplier is smaller than its 1.6 because here
+# it scales a correction that is already capped at the full error.
+PHRASE_ENTRY_S = 0.12
+PHRASE_ENTRY_PULL = 1.35
+
 # A tempo difference smaller than this is performance, not drift. 0.0008 is
 # 0.08%: about 140 ms over a three-minute song, which is roughly one
 # sixteenth at 110 BPM -- the point at which the error stops being a feel
@@ -83,6 +91,7 @@ class AlignReport:
     error_before_ms: float = 0.0
     error_after_ms: float = 0.0
     max_move_ms: float = 0.0
+    phrase_entries: int = 0
     drift_slope: float = 0.0
     drift_corrected: bool = False
     drift_removed_ms: float = 0.0
@@ -201,6 +210,10 @@ def align_to_grid(y: np.ndarray, sr: int, onsets_s: FloatSeq,
     # ── 3. How much of each correction to apply ──────────────────────────
     downbeats = np.asarray(context.downbeats, dtype=np.float64)
     bar = float(context.bar_duration_s or 0.0)
+    # `phrases` was a parameter this function accepted and never read, so
+    # the entry weighting it exists for was never applied.
+    entries = np.asarray([float(p.start) for p in (phrases or ())
+                          if p is not None], dtype=np.float64)
     move = np.zeros_like(o)
     for i in range(o.size):
         if not assign.assigned[i]:
@@ -214,7 +227,18 @@ def align_to_grid(y: np.ndarray, sr: int, onsets_s: FloatSeq,
             w = max(w, salience.metrical_weight(float(assign.targets[i]),
                                                 downbeats, bar,
                                                 context.beats_per_bar))
-        move[i] = err * float(np.clip(strength, 0.0, 1.0)) * w
+        # A phrase entry is where the listener locks onto the pocket, so
+        # it is worth more than a syllable in the middle of a line.
+        if entries.size and np.min(np.abs(entries - assign.targets[i])) < PHRASE_ENTRY_S:
+            w *= PHRASE_ENTRY_PULL
+            rep.phrase_entries += 1
+        # The weight decides *which* onsets are worth moving, never how
+        # far past the grid to move them. Uncapped it did both: the
+        # metrical weight reaches 2.0 on a downbeat, so at full strength a
+        # syllable 30 ms late was moved 60 ms and arrived 30 ms early --
+        # the error mirrored rather than corrected, on precisely the
+        # positions a listener locks onto.
+        move[i] = err * float(np.clip(strength * w, 0.0, 1.0))
 
     # ── 4. Neighbour safety ──────────────────────────────────────────────
     # Limited against the de-drifted spacing, because that is the spacing

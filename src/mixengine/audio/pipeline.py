@@ -133,9 +133,12 @@ def _render_notes(vdna: dict, tinfo: dict) -> List[str]:
         notes.append("the beat was padded with silence from %.0f s to %.0f s "
                      "for the vocal's tail" % (float(orig or 0),
                                                float(bf.get("target_len_s") or 0)))
-    plan = (tinfo.get("tuning") or {}).get("plan") or {}
+    tune = tinfo.get("tuning") or {}
+    plan = tune.get("plan") or {}
     if plan.get("n_tuned"):
         notes.append("the vocal was tuned: %s" % plan.get("summary", ""))
+    elif tune.get("enabled") is False and tune.get("reason"):
+        notes.append("the pitch was left exactly as sung: %s" % tune["reason"])
     if vdna.get("performance_source") == "user":
         notes.append("treated as %s, as you said"
                      % str(vdna.get("performance_type") or "").replace("_", " "))
@@ -469,16 +472,28 @@ def render_variant(vocal_audio: np.ndarray, sr: int, vdna: dict,
     # actually sounding underneath it, gestures are left alone, and the
     # blues degrees are protected in the genres that depend on them.
     perf = vdna.get("performance_type", "sung")
+    tune_skipped = ""
     if render_plan is not None:
         tune_strength = (render_plan.tuning.strength
                          if render_plan.tuning.enabled else 0.0)
         if tune_strength <= 0.02:
-            log.info("  tuning: skipped -- %s", render_plan.tuning.reason)
+            tune_skipped = render_plan.tuning.reason or "the plan asked for none"
+            log.info("  tuning: skipped -- %s", tune_skipped)
     else:
         tune_strength = max(0.0, profile.tune_strength
                             + float(o.get("tune_strength", 0.0)))
         if perf == "rap":
             tune_strength = 0.0        # tuning a rap vocal sounds wrong
+            tune_skipped = "this is a rap delivery, and tuning one sounds wrong"
+        elif tune_strength <= 0.02:
+            tune_skipped = "this genre leaves the pitch alone"
+    # A decision not to touch the pitch is still a decision, and the
+    # person is owed it. Reported here rather than left as an absent key,
+    # which read downstream as "no tuning stage exists" rather than "the
+    # engine listened and chose to leave the notes where they were".
+    if tune_strength <= 0.02:
+        tinfo["tuning"] = {"enabled": False, "reason": tune_skipped,
+                           "notes_corrected": 0}
     if tune_strength > 0.02:
         voice = vdna.get("voice") or {}
         harm_ctx = tuning.HarmonicContext.from_beat_dna(
