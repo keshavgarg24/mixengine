@@ -33,3 +33,6 @@ RECOVERY_REPORT.md
 
 # test audio fixtures — regenerate with: python tests/make_fixtures.py
 tests/fixtures/
+
+# render output artefacts
+result.json
