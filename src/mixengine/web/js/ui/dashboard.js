@@ -110,7 +110,7 @@ function refreshGo() {
 /* ── Treatment ─────────────────────────────────────────────────────── */
 
 const FIELDS = ['vocal_state', 'relationship', 'tune', 'timing', 'space',
-                'nudge', 'key'];
+                'nudge', 'key', 'language'];
 
 function readIntents() {
   const out = {};
@@ -300,6 +300,7 @@ async function run() {
   body.append('beat', slots.beat.file);
   const intents = readIntents();
   if (intents.key) body.append('key', intents.key);
+  if (intents.language) body.append('language', intents.language);
 
   try {
     const job = await api('/api/prepare', { method: 'POST', body });

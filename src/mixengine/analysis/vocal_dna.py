@@ -46,8 +46,12 @@ def extract(path: str,
             vocal_id: Optional[str] = None,
             reference_beat_path: Optional[str] = None,
             reference_beat_dna: Optional[dict] = None,
-            reference_stated: bool = True) -> dict:
+            reference_stated: bool = True,
+            language: Optional[str] = None) -> dict:
     """Analyse an uploaded vocal. Returns the DNA document.
+
+    `language` is what the words are in, when the person said; None lets the
+    transcriber detect it and say how sure it was.
 
     `user_bpm` / `user_key` are optional hints from the upload form. Asking
     the user one question is far cheaper and more reliable than trying to
@@ -157,7 +161,7 @@ def extract(path: str,
     words = None
     if asr_audio is not None and (not voice
                                   or voice.get("verdict") != "no_voice"):
-        words = lyrics.transcribe(asr_audio, lyrics.ASR_SR)
+        words = lyrics.transcribe(asr_audio, lyrics.ASR_SR, language=language)
     noise_out = analysis.noise_verdict(y, sr, phrases)
     noise = {"verdict": noise_out["verdict"],
              "snr_db": noise_out["snr_db"],

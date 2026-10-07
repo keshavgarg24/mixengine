@@ -915,8 +915,10 @@ def run(vocal_path: str, catalog: Sequence[dict], out_dir: str,
     # ── Stage 1: Vocal DNA ────────────────────────────────────────────────
     if vdna is None:
         conditioned = os.path.join(out_dir, "_conditioned_vocal.wav")
-        vdna = vocal_dna.extract(vocal_path, conditioned_out=conditioned,
-                                 user_bpm=user_bpm, user_key=user_key)
+        vdna = vocal_dna.extract(
+            vocal_path, conditioned_out=conditioned,
+            user_bpm=user_bpm, user_key=user_key,
+            language=getattr(intents, "language", None) if intents else None)
     if vdna.get("status") != "ok":
         return {"status": "failed", "error": vdna.get("error", "vocal analysis failed"),
                 "vocal_dna": vdna}

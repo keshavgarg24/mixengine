@@ -248,6 +248,7 @@ class EngineService:
 
     def analyze_vocal(self, audio_path: str, *, user_bpm: Optional[float] = None,
                       user_key: Optional[str] = None, force: bool = False,
+                      language: Optional[str] = None,
                       recorded_over: Optional[str] = None,
                       beat: Optional[dict] = None,
                       job: Optional[Job] = None) -> dict:
@@ -276,9 +277,10 @@ class EngineService:
             ref = beat
 
         key = file_hash(audio_path)
-        if user_bpm or user_key or ref:
-            key = "%s-%s-%s-%s" % (key, user_bpm or "", user_key or "",
-                                   (ref or {}).get("cache_key") or recorded_over or "")
+        if user_bpm or user_key or ref or language:
+            key = "%s-%s-%s-%s-%s" % (key, user_bpm or "", user_key or "",
+                                      (ref or {}).get("cache_key") or recorded_over or "",
+                                      language or "")
         cache = self.ws.vocal_dna_path(key)
         if not force and os.path.exists(cache):
             cached = audio_io.read_json(cache)
@@ -297,6 +299,7 @@ class EngineService:
         # master untouched and then boosted.
         dna = vocal_dna.extract(
             audio_path, user_bpm=user_bpm, user_key=user_key, do_separation=True,
+            language=language,
             reference_beat_path=(ref or {}).get("source_path"),
             reference_beat_dna=ref, reference_stated=stated,
             conditioned_out=self.ws.path("vocals", "%s-conditioned.wav" % key))
@@ -332,8 +335,9 @@ class EngineService:
             from ..audio import pipeline
             j.stage, j.progress, j.message = "analysing vocal", 0.1, \
                 "Measuring pitch, phrasing and timing"
-            vdna = self.analyze_vocal(vocal_path, user_bpm=user_bpm,
-                                      user_key=user_key, job=j)
+            vdna = self.analyze_vocal(
+                vocal_path, user_bpm=user_bpm, user_key=user_key, job=j,
+                language=getattr(intents, "language", None) if intents else None)
             if vdna.get("status") != "ok":
                 raise RuntimeError("the vocal could not be used: %s"
                                    % (vdna.get("error") or "analysis failed"))
@@ -391,8 +395,9 @@ class EngineService:
                 "Listening to the vocal"
             user_bpm = getattr(intents, "bpm", None) if intents else None
             user_key = getattr(intents, "key", None) if intents else None
-            vdna = self.analyze_vocal(vocal_path, user_bpm=user_bpm,
-                                      user_key=user_key, beat=bdna, job=j)
+            vdna = self.analyze_vocal(
+                vocal_path, user_bpm=user_bpm, user_key=user_key, beat=bdna, job=j,
+                language=getattr(intents, "language", None) if intents else None)
             if vdna.get("status") != "ok":
                 raise RuntimeError("the vocal could not be used: %s"
                                    % (vdna.get("error") or "analysis failed"))
@@ -443,8 +448,9 @@ class EngineService:
                 "Listening to the vocal"
             user_bpm = getattr(intents, "bpm", None) if intents else None
             user_key = getattr(intents, "key", None) if intents else None
-            vdna = self.analyze_vocal(vocal_path, user_bpm=user_bpm,
-                                      user_key=user_key, beat=bdna, job=j)
+            vdna = self.analyze_vocal(
+                vocal_path, user_bpm=user_bpm, user_key=user_key, beat=bdna, job=j,
+                language=getattr(intents, "language", None) if intents else None)
             if vdna.get("status") != "ok":
                 raise RuntimeError("the vocal could not be used: %s"
                                    % (vdna.get("error") or "analysis failed"))

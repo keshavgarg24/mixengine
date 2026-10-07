@@ -33,6 +33,9 @@ ENTRIES = ("section", "top")
 NOISE_ANSWERS = ("accept", "rerecord")
 LENGTH_ANSWERS = ("accept", "rerecord")
 VOICE_ANSWERS = ("accept", "rerecord")
+# What the take is sung or rapped in. Hindi and Punjabi sound alike and a
+# detector cannot be trusted to tell them apart, so this is asked, not guessed.
+LANGUAGES = ("en", "hi", "pa")
 
 
 def _choice(value: Any, allowed: tuple, field_name: str) -> Optional[str]:
@@ -108,6 +111,7 @@ class Intents:
     noise: Optional[str] = None            # accept: render a severe take anyway
     length: Optional[str] = None           # accept: render a take too short for a song
     voice: Optional[str] = None            # accept: use a file with no voice as the vocal
+    language: Optional[str] = None         # en | hi | pa: what the words are in
 
     AUTO: ClassVar["Intents"]
 
@@ -137,6 +141,7 @@ class Intents:
             noise=_choice(d.get("noise"), NOISE_ANSWERS, "noise"),
             length=_choice(d.get("length"), LENGTH_ANSWERS, "length"),
             voice=_choice(d.get("voice"), VOICE_ANSWERS, "voice"),
+            language=_choice(d.get("language"), LANGUAGES, "language"),
         )
 
     def to_dict(self) -> Dict[str, Any]:

@@ -83,6 +83,22 @@ async function adoptTake(take) {
   }
 }
 
+const LANGUAGE_NAMES = { en: 'English', hi: 'Hindi', pa: 'Punjabi' };
+
+/**
+ * What the words were read as, and how it was decided.
+ *
+ * Said by the person, detected, or defaulted: the three are not equally
+ * trustworthy and the engine's own guess is shown as one.
+ */
+function languageLabel(lyrics) {
+  if (!lyrics || !lyrics.n_words) return DASH;
+  const name = LANGUAGE_NAMES[lyrics.language] || lyrics.language || DASH;
+  if (lyrics.language_source === 'declared') return name;
+  if (lyrics.language_source === 'default') return `${name} (a guess)`;
+  return `${name} (detected)`;
+}
+
 function paintReadout(v) {
   const q = v.quality || {};
   const warnings = v.warnings || [];
@@ -100,6 +116,7 @@ function paintReadout(v) {
         <div><dt>Tempo</dt><dd class="mono">${v.bpm ? num(v.bpm, 1, ' BPM') : 'no stable tempo'}</dd></div>
         <div><dt>Tempo source</dt><dd>${esc(v.bpm_source || DASH)}</dd></div>
         <div><dt>Delivery</dt><dd>${esc((v.performance_type || DASH).replace(/_/g, ' '))}</dd></div>
+        <div><dt>Language</dt><dd>${esc(languageLabel(v.lyrics))}</dd></div>
         <div><dt>Voice</dt><dd>${esc((v.voice_type || DASH).replace(/_/g, ' '))}</dd></div>
         <div><dt>Range</dt><dd class="mono">${esc(v.range_low_note || '?')}–${esc(v.range_high_note || '?')}</dd></div>
         <div><dt>Notes</dt><dd class="mono">${esc(v.n_notes ?? DASH)}</dd></div>

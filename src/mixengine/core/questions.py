@@ -181,6 +181,45 @@ def _performance_question(vdna: dict) -> Optional[Question]:
         detail={"confidence": conf})
 
 
+LANGUAGE_LABELS = {"en": "English", "hi": "Hindi", "pa": "Punjabi"}
+
+
+def _language_question(vdna: dict) -> Optional[Question]:
+    """Ask what the words are in, unless it is settled or plainly English.
+
+    English detected with confidence needs no question. Hindi and Punjabi
+    do, even when detected confidently: they share most of their sound,
+    the detector cannot be trusted to separate them, and everything that
+    depends on the words -- the transcript, and later the voice that sings
+    them -- needs the right one. An unsure detection is asked about too.
+    """
+    doc = vdna.get("lyrics") or {}
+    if not doc or doc.get("language_confirmed") or not doc.get("n_words"):
+        return None
+    lang = doc.get("language")
+    source = doc.get("language_source")
+    if source == "detected" and lang == "en":
+        return None
+    shown = LANGUAGE_LABELS.get(str(lang), str(lang))
+    if source == "default":
+        text = ("I could not tell what language this is in, so I read it as "
+                "English. If the words are in another language, say which, "
+                "or the lyrics will be read wrongly.")
+    else:
+        text = ("This sounds like %s. Hindi and Punjabi are easy to confuse, "
+                "so please check: what language is it in?" % shown)
+    ev = doc.get("language_evidence") or {}
+    return Question(
+        id="language", intent="language", severity="warn", text=text,
+        options=[_opt(v, LANGUAGE_LABELS[v]) for v in ("en", "hi", "pa")],
+        default=lang if lang in LANGUAGE_LABELS else "en",
+        reason="language read as %s at %.0f%%" % (
+            ev.get("detected", lang),
+            float(ev.get("detected_probability") or 0.0) * 100),
+        detail={"detected": ev.get("detected"), "source": source,
+                "confidence": ev.get("detected_probability")})
+
+
 def _key_question(vdna: dict) -> Optional[Question]:
     key = vdna.get("key") or {}
     conf = float(vdna.get("key_confidence") or 0.0)
@@ -268,7 +307,8 @@ def questions_for(vdna: dict, bdna: Optional[dict] = None) -> List[Question]:
     """Everything the analysis could not settle, most serious first."""
     out = [q for q in (_length_question(vdna), _voice_question(vdna),
                        _noise_question(vdna), _start_question(vdna),
-                       _performance_question(vdna), _key_question(vdna),
+                       _performance_question(vdna), _language_question(vdna),
+                       _key_question(vdna),
                        _bpm_question(vdna), _entry_question(bdna)) if q]
     order = {"block": 0, "warn": 1, "info": 2}
     out.sort(key=lambda q: order.get(q.severity, 3))

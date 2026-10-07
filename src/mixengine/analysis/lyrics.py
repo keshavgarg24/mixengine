@@ -28,12 +28,24 @@ repeats, so the repetition still reads; and the word's start time is
 right even where the word is wrong. Accuracy matters for the third use
 and is reported so the critic can discount a poor one.
 
-Language detection is forced, not trusted. Left to itself the model read a
-dry English rap take as Punjabi at 0.63 confidence and returned four
-segments containing nothing but commas -- a silent, total failure. Sung
-and rapped vowels are long and pitched and do not look like the speech the
-detector was trained on, so a low-confidence guess is discarded in favour
-of the configured language.
+Language is declared when the person knows it and detected only when the
+detector is confident. Left to itself the model read a dry English rap
+take as Punjabi at 0.41 confidence and returned four segments containing
+nothing but commas, so a low-confidence guess cannot be trusted. The cure
+used to be to force English, and forcing a language onto audio in another
+does not fail: it *translates*. Hindi speech transcribed as English comes
+back as fluent English whose word times no longer belong to the audio.
+
+Scoring each supported language on an excerpt and keeping the best was
+tried and does not work: forced to Hindi, an English rap produced seventy
+plausible Urdu-script "words" and outscored the English decode, which
+returned nothing at all on the same excerpt. A wrong language is not
+reliably worse than a right one, so there is nothing to score. What is
+left is to be honest about it. A declared language is authoritative, a
+confident detection is trusted, and an unsure one falls back to English
+and says so, so the interface can ask the person instead of the engine
+guessing -- which matters most for Hindi against Punjabi, which share
+most of their sound and which only the person can tell apart.
 """
 
 from __future__ import annotations
@@ -42,7 +54,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -59,9 +71,34 @@ log = logging.getLogger("mixengine.lyrics")
 MODEL_SIZE = "base"
 COMPUTE_TYPE = "int8"
 
-# Below this, the detected language is discarded. See the module note.
+# Below this, the detected language is not trusted. See the module note.
 LANGUAGE_MIN_PROB = 0.7
-DEFAULT_LANGUAGE = "en"
+SUPPORTED_LANGUAGES = ("en", "hi", "pa")
+DEFAULT_LANGUAGE = "en"          # when detection is not confident
+# Hindi and Urdu are one spoken language; the model labels it either way
+# depending on the accent. Transcribing as Hindi writes Devanagari.
+LANGUAGE_ALIASES = {"ur": "hi"}
+# `base` writes Hindi and Punjabi in Urdu script and mishears more of it;
+# `small` writes Devanagari and costs about twice the time. English keeps
+# the fast model.
+INDIC_LANGUAGES = ("hi", "pa")
+INDIC_MODEL_SIZE = "small"
+DETECT_EXCERPT_S = 30.0
+
+# How the decode is run. Whisper's default retries any window that looks
+# wrong at a higher *sampling* temperature, and rap trips the checks (a hook
+# repeats, the words are dense), so the same 36 s take returned 95, 9, 43, 6
+# and 12 words on five runs and seeding does not make them repeat; on other
+# takes the default discards whole windows as "no speech" and returns three
+# words from fifty seconds. Temperature 0 with the checks off is repeatable
+# and keeps the text, which the hook detector needs. It is NOT claimed to be
+# more accurate: it can place many words at zero length, and word times
+# from either mode agree with the audio's onsets only sometimes. That is what
+# `timing_check` measures, and why times are gated on it rather than trusted.
+DECODE: Dict[str, Any] = {
+    "temperature": 0.0, "compression_ratio_threshold": None,
+    "log_prob_threshold": None, "no_speech_threshold": None,
+    "vad_filter": False, "beam_size": 5, "condition_on_previous_text": False}
 
 # Whisper transcribes at 16 kHz mono.
 ASR_SR = 16000
@@ -72,6 +109,16 @@ ASR_SR = 16000
 ASR_QUIET_FLOOR_DB = -35.0
 ASR_QUIET_TARGET_DB = -25.0
 ASR_MAX_GAIN_DB = 40.0
+
+# Whether a transcript's word times can be used as timing anchors is measured,
+# not assumed. A word that is really there starts where the voice does, so its
+# start lands near an acoustic onset; a hallucinated or mis-aligned one lands
+# anywhere. Rap onsets are dense (about six a second), so chance alone puts
+# a third to a half of random times near one, and the test is how far above
+# chance the words are, not how many are near.
+ONSET_TOLERANCE_S = 0.05
+TIMING_MIN_WORDS = 15
+TIMING_MIN_LIFT = 1.3
 
 # A word the model is this unsure of is kept in the transcript but not
 # counted toward intelligibility, and not used as a timing anchor.
@@ -177,15 +224,112 @@ def _model(size: str = MODEL_SIZE):
     return _MODEL
 
 
+def timing_check(audio: np.ndarray, starts: Sequence[float],
+                 sr: int = ASR_SR) -> dict:
+    """How far above chance the word starts agree with acoustic onsets.
+
+    Needs no knowledge of the true lyrics, which is the point: it can say a
+    transcript's timing is not to be trusted without knowing what was sung.
+    """
+    import librosa
+    out: dict = {"words_checked": len(starts), "onset_agreement": None,
+                 "chance": None, "lift": None, "reliable": False}
+    if len(starts) < TIMING_MIN_WORDS or audio.size < sr:
+        return out
+    onsets = librosa.onset.onset_detect(y=audio.astype(np.float32), sr=sr,
+                                        units="time")
+    if len(onsets) < 4:
+        return out
+    t = np.asarray(starts, dtype=np.float64)
+    agree = float((np.abs(t[:, None] - onsets[None, :]).min(axis=1)
+                   < ONSET_TOLERANCE_S).mean())
+    rng = np.random.default_rng(0)
+    r = rng.uniform(0.0, audio.size / sr, 2000)
+    chance = float((np.abs(r[:, None] - onsets[None, :]).min(axis=1)
+                    < ONSET_TOLERANCE_S).mean())
+    lift = agree / chance if chance > 0 else 0.0
+    out.update(onset_agreement=round(agree, 3), chance=round(chance, 3),
+               lift=round(lift, 2), reliable=bool(lift >= TIMING_MIN_LIFT))
+    return out
+
+
+def timing_usable(doc: Optional[dict]) -> bool:
+    """Whether a transcript's times may be used to place anything.
+
+    A document made before the check existed carries no verdict and is
+    trusted as it always was.
+    """
+    if not doc:
+        return False
+    return bool((doc.get("timing") or {}).get("reliable", True))
+
+
+def normalise_language(language: Optional[str]) -> Optional[str]:
+    """A language code as this module uses it, or None for "work it out"."""
+    if not language:
+        return None
+    code = str(language).strip().lower().split("-")[0]
+    if code in ("", "auto"):
+        return None
+    return LANGUAGE_ALIASES.get(code, code)
+
+
+def model_size_for(language: Optional[str], default: str = MODEL_SIZE) -> str:
+    return INDIC_MODEL_SIZE if language in INDIC_LANGUAGES else default
+
+
+def _loudest_excerpt(audio: np.ndarray, seconds: float = DETECT_EXCERPT_S) -> np.ndarray:
+    """The loudest window of the take, which is where there are words.
+
+    The start of a take is often breath and silence, and a language cannot
+    be detected on that.
+    """
+    n = int(seconds * ASR_SR)
+    if audio.size <= n:
+        return audio
+    hop = ASR_SR
+    sq = audio.astype(np.float64) ** 2
+    per_s = np.add.reduceat(sq, np.arange(0, sq.size, hop))
+    win = int(seconds)
+    if per_s.size <= win:
+        return audio[:n]
+    csum = np.concatenate([[0.0], np.cumsum(per_s)])
+    best = int(np.argmax(csum[win:] - csum[:-win]))
+    return audio[best * hop: best * hop + n]
+
+
+def resolve_language(audio: np.ndarray, declared: Optional[str] = None,
+                     ) -> Tuple[str, str, dict]:
+    """Decide the language of a take. Returns (language, source, evidence).
+
+    `source` is "declared" (the person said), "detected" (the model was
+    confident) or "default" (it was not, so English, unconfirmed).
+    """
+    declared = normalise_language(declared)
+    if declared:
+        return declared, "declared", {}
+
+    model = _model(MODEL_SIZE)
+    lang, prob, _ = model.detect_language(_loudest_excerpt(audio))
+    lang = normalise_language(lang) or DEFAULT_LANGUAGE
+    prob = float(prob or 0.0)
+    evidence = {"detected": lang, "detected_probability": round(prob, 3)}
+    if prob >= LANGUAGE_MIN_PROB:
+        return lang, "detected", evidence
+    log.info("  lyrics: language read as %s at %.2f; not confident, "
+             "transcribing as %s and asking", lang, prob, DEFAULT_LANGUAGE)
+    return DEFAULT_LANGUAGE, "default", evidence
+
+
 def transcribe(y: np.ndarray, sr: int, *,
                language: Optional[str] = None,
-               model_size: str = MODEL_SIZE) -> Optional[dict]:
+               model_size: Optional[str] = None) -> Optional[dict]:
     """Transcribe a take into lines and word timings.
 
-    `language` forces a language; None means detect it and fall back to
-    `DEFAULT_LANGUAGE` when the detection is not confident. Returns None
-    when no transcriber is installed, so every caller keeps the behaviour
-    it had before this module existed.
+    `language` is what the person said the take is in; None means work it
+    out (see `resolve_language`). `model_size` overrides the size chosen
+    for the language. Returns None when no transcriber is installed, so
+    every caller keeps the behaviour it had before this module existed.
     """
     if not CAPS.whisper:
         return None
@@ -196,26 +340,12 @@ def transcribe(y: np.ndarray, sr: int, *,
             return None
         audio = (librosa.resample(mono, orig_sr=sr, target_sr=ASR_SR)
                  if sr != ASR_SR else mono).astype(np.float32)
-        model = _model(model_size)
-        segments, info = model.transcribe(
-            audio, language=language, word_timestamps=True,
-            vad_filter=False, beam_size=5,
-            condition_on_previous_text=False)
 
-        detected = getattr(info, "language", None)
-        prob = float(getattr(info, "language_probability", 0.0) or 0.0)
-        forced = None
-        if language is None and prob < LANGUAGE_MIN_PROB:
-            # Redo it in the fallback language. A sung vowel does not look
-            # like the speech the detector was trained on, and its wrong
-            # guess costs the whole transcript rather than a few words.
-            forced = DEFAULT_LANGUAGE
-            log.info("  lyrics: language read as %s at %.2f; "
-                     "transcribing as %s instead", detected, prob, forced)
-            segments, info = model.transcribe(
-                audio, language=forced, word_timestamps=True,
-                vad_filter=False, beam_size=5,
-                condition_on_previous_text=False)
+        chosen, source, evidence = resolve_language(audio, language)
+        size = model_size or model_size_for(chosen)
+        model = _model(size)
+        segments, _ = model.transcribe(
+            audio, language=chosen, word_timestamps=True, **DECODE)
 
         lines: List[Line] = []
         for s in segments:
@@ -233,20 +363,24 @@ def transcribe(y: np.ndarray, sr: int, *,
         all_words = [w for ln in lines for w in ln.words]
         confident = [w for w in all_words if w.probability >= WORD_MIN_PROB]
         doc = {
-            "model": model_size,
-            "language": forced or detected,
-            "language_probability": round(prob, 3),
-            "language_forced": forced is not None,
+            "model": size,
+            "language": chosen,
+            "language_source": source,
+            # The one fact the voice stage cannot do without, and the one
+            # the scoring cannot settle between Hindi and Punjabi.
+            "language_confirmed": source == "declared",
+            "language_evidence": evidence,
             "text": " ".join(ln.text for ln in lines).strip(),
             "lines": [ln.to_dict() for ln in lines],
             "n_words": len(all_words),
+            "timing": timing_check(audio, [w.start for w in confident]),
             "n_confident_words": len(confident),
             "mean_word_probability": round(
                 float(np.mean([w.probability for w in all_words])), 3)
             if all_words else 0.0,
         }
-        log.info("  lyrics: %d words in %d lines (%s, mean confidence %.2f)",
-                 doc["n_words"], len(lines), doc["language"],
+        log.info("  lyrics: %d words in %d lines (%s via %s, mean confidence %.2f)",
+                 doc["n_words"], len(lines), doc["language"], source,
                  doc["mean_word_probability"])
         return doc
     except Exception as e:                                   # noqa: BLE001
@@ -313,6 +447,8 @@ def word_onsets(doc: Optional[dict],
     any level threshold, so a clipped take and a clean one give the same
     times for the same performance.
     """
+    if not timing_usable(doc):
+        return np.zeros(0, dtype=np.float64)
     return np.asarray([w.start for w in words_of(doc, min_probability)],
                       dtype=np.float64)
 
@@ -332,7 +468,7 @@ def line_starts(doc: Optional[dict],
     Lines, not words: a start per word is dense enough that every bar
     phase looks equally good, and it is lines that begin on bar lines.
     """
-    if not doc:
+    if not doc or not timing_usable(doc):
         return np.zeros(0, dtype=np.float64)
     out: List[float] = []
     for ln in (doc.get("lines") or []):
@@ -395,7 +531,10 @@ def phrase_lyrics(doc: Optional[dict],
     its own rather than the singer's, and a consumer that cannot tell the
     difference will hear a hook in the noise.
     """
-    if not doc or not phrases:
+    # Words are given to phrases by when they start, so a transcript whose
+    # times are not to be trusted would put them in the wrong ones, and a
+    # hook found among those would be an artefact of the mistake.
+    if not doc or not phrases or not timing_usable(doc):
         return [([], 0.0) for _ in phrases]
     words = words_of(doc, min_probability)
     out: List[Tuple[List[str], float]] = []

@@ -138,6 +138,7 @@ def cmd_analyze_vocal(args) -> int:
             print(f"warning: beat {args.recorded_over!r} not found in the catalog; "
                   f"analysing without a reference beat")
     dna = vocal_dna.extract(args.vocal, user_bpm=args.bpm, user_key=args.key,
+                            language=getattr(args, "language", None),
                             reference_beat_path=(ref or {}).get("source_path"),
                             reference_beat_dna=ref)
     path = vocal_dna.save(dna, out_dir)
@@ -206,6 +207,7 @@ def cmd_render(args) -> int:
         beat_ids=args.beat_id,
         intents=Intents.from_dict({
             "bpm": args.bpm, "key": args.key,
+            "language": getattr(args, "language", None),
             "nudge": getattr(args, "nudge", None),
             "performance": getattr(args, "performance", None),
             "lead_in": getattr(args, "lead_in", None),
@@ -298,6 +300,9 @@ def main(argv=None) -> int:
     av.add_argument("--out", default=None)
     av.add_argument("--bpm", type=float, default=None, help="known vocal BPM")
     av.add_argument("--key", default=None, help="known vocal key, e.g. f#_minor")
+    av.add_argument("--language", default=None, choices=["en", "hi", "pa"],
+                    help="what the words are in; Hindi and Punjabi cannot "
+                         "be told apart reliably, so say which")
     av.add_argument("--recorded-over", default=None, metavar="BEAT_ID",
                     help="catalog beat that was playing during the take: "
                          "enables bleed cancellation and fixes the tempo")
@@ -323,6 +328,8 @@ def main(argv=None) -> int:
                     help="force specific beat ids instead of matching")
     rd.add_argument("--bpm", type=float, default=None)
     rd.add_argument("--key", default=None)
+    rd.add_argument("--language", default=None, choices=["en", "hi", "pa"],
+                    help="what the words are in (en, hi or pa)")
     rd.add_argument("--nudge", type=float, default=None,
                     help="shift the vocal by N beats (+ later, - earlier). "
                          "Where a vocal's bars sit against a beat it was "

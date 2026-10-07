@@ -253,7 +253,8 @@ def create_app(data_root: str = "./data") -> FastAPI:
                 vocal_path: Optional[str] = Form(None),
                 beat_path: Optional[str] = Form(None),
                 bpm: Optional[float] = Form(None),
-                key: Optional[str] = Form(None)):
+                key: Optional[str] = Form(None),
+                language: Optional[str] = Form(None)):
         """Analyse a vocal and a beat and return what the render would ask.
 
         The result carries both files' workspace paths, a brief of each
@@ -262,7 +263,7 @@ def create_app(data_root: str = "./data") -> FastAPI:
         on `/api/render`. Analysis is cached by content, so the render
         that follows does not repeat it.
         """
-        intents = _intents(bpm=bpm, key=key)
+        intents = _intents(bpm=bpm, key=key, language=language)
         if (vocal is None and not vocal_path) or (beat is None and not beat_path):
             raise HTTPException(400, "send a vocal and a beat")
         vpath = _save_upload(vocal, "vocals") if vocal is not None \
@@ -293,7 +294,8 @@ def create_app(data_root: str = "./data") -> FastAPI:
                entry: Optional[str] = Form(None),
                noise: Optional[str] = Form(None),
                length: Optional[str] = Form(None),
-               voice: Optional[str] = Form(None)):
+               voice: Optional[str] = Form(None),
+               language: Optional[str] = Form(None)):
         """Render a song.
 
         Three shapes, because three callers need different things. The
@@ -312,7 +314,7 @@ def create_app(data_root: str = "./data") -> FastAPI:
             timing=timing, space=space, separate=separate, loudness=loudness,
             nudge=nudge, bpm=bpm, key=key, performance=performance,
             lead_in=lead_in, entry=entry, noise=noise, length=length,
-            voice=voice)
+            voice=voice, language=language)
 
         if vocal is not None and beat is not None:
             job = svc.start_session_render(_save_upload(vocal, "vocals"),
