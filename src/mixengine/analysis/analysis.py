@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -666,6 +666,7 @@ def track_pitch(y: np.ndarray, sr: int) -> PitchResult:
         res = _pitch_pyin(mono, sr)
     if res.f0.size:
         res.notes = _segment_notes(res)
+        annotate_expression(res.notes, res, mono, sr)
     return res
 
 
@@ -765,6 +766,98 @@ def _pitch_pyin(mono: np.ndarray, sr: int) -> PitchResult:
     except Exception as e:
         log.error("pyin failed: %s", e)
         return PitchResult()
+
+
+# Expression measured per note. A voice model asked to sing a score can only
+# sing what the score says, so these are what separates a performance from
+# a row of identical notes.
+VIBRATO_BAND_HZ = (4.0, 8.0)
+VIBRATO_MIN_NOTE_S = 0.25        # shorter than this holds under 1.5 cycles
+VIBRATO_MIN_DEPTH_CENTS = 12.0   # below this it is pitch jitter, not vibrato
+VIBRATO_PEAK_RATIO = 5.0         # band peak over the median of 1-15 Hz
+VELOCITY_CENTRE = 0.7            # the median note, matching Note's default
+VELOCITY_DB_SPAN = 30.0          # +-9 dB around the median spans 0.4 .. 1.0
+VELOCITY_MIN_NOTES = 6           # below this "relative to the take" is noise
+
+
+def note_vibrato(midi_seg: np.ndarray, dt: float) -> Tuple[float, float]:
+    """Rate (Hz) and amplitude (cents) of the vibrato in one note, or (0, 0).
+
+    The contour is detrended with a quadratic first, because a note that
+    glides or bows is not vibrato and would otherwise put all of its
+    energy below the band. What remains must have a sharp spectral peak
+    in 4-8 Hz: jitter is broadband and fails the prominence test no
+    matter how large it is.
+    """
+    seg = np.asarray(midi_seg, dtype=np.float64)
+    if seg.size < max(8, int(VIBRATO_MIN_NOTE_S / max(dt, 1e-6))) or dt <= 0:
+        return 0.0, 0.0
+    ok = np.isfinite(seg)
+    if ok.sum() < 0.8 * seg.size:
+        return 0.0, 0.0
+    idx = np.arange(seg.size)
+    seg = np.interp(idx, idx[ok], seg[ok]) * 100.0                # cents
+    seg = seg - np.polyval(np.polyfit(idx * dt, seg, 2), idx * dt)
+    win = np.hanning(seg.size)
+    nfft = 1 << int(np.ceil(np.log2(seg.size * 8)))
+    spec = np.abs(np.fft.rfft(seg * win, nfft))
+    freqs = np.fft.rfftfreq(nfft, dt)
+    band = (freqs >= VIBRATO_BAND_HZ[0]) & (freqs <= VIBRATO_BAND_HZ[1])
+    wide = (freqs >= 1.0) & (freqs <= 15.0)
+    if not band.any() or not wide.any():
+        return 0.0, 0.0
+    k = int(np.argmax(np.where(band, spec, 0.0)))
+    floor = float(np.median(spec[wide]))
+    if floor <= 0 or spec[k] / floor < VIBRATO_PEAK_RATIO:
+        return 0.0, 0.0
+    amp = 2.0 * spec[k] / float(win.sum())                        # cents
+    if amp < VIBRATO_MIN_DEPTH_CENTS:
+        return 0.0, 0.0
+    return float(freqs[k]), float(amp)
+
+
+def note_velocities(levels_db: Sequence[float]) -> List[float]:
+    """0-1 loudness for each note, relative to the take it came from.
+
+    Relative, because an absolute level says how the take was gained, not
+    how it was sung. The median note maps to 0.7 so a take sung evenly
+    stays where the engine already assumed it was.
+    """
+    lv = np.asarray(levels_db, dtype=np.float64)
+    if lv.size < VELOCITY_MIN_NOTES or not np.isfinite(lv).all():
+        return [VELOCITY_CENTRE] * int(lv.size)
+    med = float(np.median(lv))
+    v = VELOCITY_CENTRE + (lv - med) / VELOCITY_DB_SPAN
+    return [float(x) for x in np.clip(v, 0.0, 1.0)]
+
+
+def annotate_expression(notes: List[dict], p: "PitchResult",
+                        mono: np.ndarray, sr: int) -> None:
+    """Add velocity and vibrato to each note, under the names `Note` reads.
+
+    The analyser used to write the spread of the whole note as "vibrato",
+    which `Note.from_dict` never read, so velocity and vibrato reached the
+    plan as constants. The spread stays, under its honest name, because
+    the gesture rule is about spread; vibrato is now measured as vibrato.
+    """
+    if not notes or p.times.size < 2:
+        return
+    dt = float(np.median(np.diff(p.times)))
+    midi = p.midi
+    levels = []
+    for n in notes:
+        a, b = int(n["start"] * sr), max(int(n["end"] * sr), int(n["start"] * sr) + 1)
+        seg = mono[a:b]
+        rms = float(np.sqrt(np.mean(seg.astype(np.float64) ** 2))) if seg.size else 0.0
+        levels.append(20.0 * np.log10(max(rms, 1e-9)))
+    for n, v in zip(notes, note_velocities(levels)):
+        lo = int(np.searchsorted(p.times, n["start"], side="left"))
+        hi = int(np.searchsorted(p.times, n["end"], side="right"))
+        rate, depth = note_vibrato(midi[lo:hi], dt)
+        n["pitch_spread_cents"] = n.get("vibrato", 0.0)
+        n["velocity"] = round(v, 3)
+        n["vibrato_rate_hz"] = round(rate, 2)
+        n["vibrato_depth_cents"] = round(depth, 1)
 
 
 def _segment_notes(p: PitchResult) -> List[dict]:

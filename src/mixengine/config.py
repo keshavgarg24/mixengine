@@ -21,7 +21,7 @@ ANALYSIS_SR = 22050             # analysis runs at half rate -- 2-4x faster, no
 HOP = 512                       # analysis hop length at ANALYSIS_SR
 N_FFT = 2048
 
-DNA_SCHEMA_VERSION = "2.1.0"    # bump to force catalog re-analysis
+DNA_SCHEMA_VERSION = "2.2.0"    # bump to force catalog re-analysis
 
 NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 

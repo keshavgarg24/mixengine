@@ -270,18 +270,23 @@ def notes_from_dna(note_dicts: Sequence[dict],
     lost.
     """
     notes: List[Note] = []
+    spreads: List[float] = []
     for d in note_dicts:
         try:
             notes.append(Note.from_dict(d))
         except Exception:
             continue
+        # The spread of the whole note, which is not its vibrato: a slide
+        # is wide and slow, vibrato is narrow and periodic. Documents made
+        # before the two were told apart carry the spread as "vibrato".
+        spreads.append(float(d.get("pitch_spread_cents", d.get("vibrato", 0.0))))
     if not detect_gestures:
         return notes
 
     for i, n in enumerate(notes):
         # Wide pitch spread within a note is a slide or scoop, not a
         # steady note that happens to be out of tune.
-        if n.vibrato_depth_cents > 70.0:
+        if spreads[i] > 70.0:
             n.attack = ATTACK_SLIDE
         if i > 0:
             prev = notes[i - 1]
