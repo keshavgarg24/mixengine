@@ -26,3 +26,10 @@ Thumbs.db
 # editors
 .idea/
 *.swp
+
+# recovery artefacts — not part of the project
+.recovery/
+RECOVERY_REPORT.md
+
+# test audio fixtures — regenerate with: python tests/make_fixtures.py
+tests/fixtures/
