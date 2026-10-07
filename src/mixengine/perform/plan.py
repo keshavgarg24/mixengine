@@ -322,6 +322,28 @@ def snap_to_grid(targets: Sequence[NoteTarget], grid: Sequence[float], *,
         t.end = t.start + length
 
 
+def as_performed(notes: Sequence[Note], *, performance_type: str = "sung",
+                 bar_s: float = 0.0, beats_per_bar: int = 4) -> PerformancePlan:
+    """The take exactly as sung: every note where it was, no correction.
+
+    For when there is no beat to judge against, or the person wants the
+    score of what they did. Gestures and runs are still named as such,
+    because a voice asked to reproduce them should know which they are.
+    """
+    plan = PerformancePlan(performance_type=performance_type,
+                           bar_s=float(bar_s), beats_per_bar=int(beats_per_bar))
+    for i, n in enumerate(notes):
+        t = NoteTarget(index=i, source_midi=float(n.midi),
+                       source_start=float(n.start), source_end=float(n.end),
+                       midi=float(n.midi), start=float(n.start), end=float(n.end),
+                       velocity=float(n.velocity),
+                       vibrato_depth_cents=float(n.vibrato_depth_cents))
+        t.decision = (KEPT_GESTURE if n.is_transition
+                      else KEPT_MELISMA if n.is_melisma else KEPT_NO_TARGET)
+        plan.targets.append(t)
+    return plan
+
+
 def build(notes: Sequence[Note], context: Any, *,
           performance_type: str = "sung",
           tuning_strength: float = 0.0,

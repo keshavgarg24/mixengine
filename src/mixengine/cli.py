@@ -125,6 +125,47 @@ def cmd_analyze_beats(args) -> int:
     return 0
 
 
+def cmd_score(args) -> int:
+    """Write the take as a score a voice could be given: JSON and MIDI."""
+    import json
+    from .analysis import vocal_dna
+    from .audio import tuning
+    from . import perform
+
+    dna = vocal_dna.extract(args.vocal, user_bpm=args.bpm,
+                            language=getattr(args, "language", None))
+    if dna.get("status") != "ok":
+        print(f"Failed: {dna.get('error')}")
+        return 1
+    bpm = args.bpm or dna.get("bpm")
+    if not bpm:
+        print("No stable tempo was found in this take. Say it: --bpm 90")
+        return 1
+    notes = tuning.notes_from_dna(dna.get("notes") or [])
+    plan = perform.as_performed(
+        notes, performance_type=dna.get("performance_type") or "sung")
+    lyric = dna.get("lyrics") or {}
+    score = perform.build_score(plan, bpm=float(bpm),
+                                language=lyric.get("language"), lyric_doc=lyric)
+    stem = os.path.join(args.out or ".", os.path.splitext(os.path.basename(args.vocal))[0])
+    os.makedirs(args.out or ".", exist_ok=True)
+    with open(stem + ".score.json", "w", encoding="utf-8") as fh:
+        json.dump(score.to_dict(), fh, ensure_ascii=False, indent=1)
+    perform.to_midi(score, stem + ".mid")
+
+    print(f"{len(score.notes)} notes at {float(bpm):.1f} BPM, "
+          f"language {lyric.get('language') or 'unknown'} "
+          f"({lyric.get('language_source') or 'n/a'})")
+    if score.lyrics_placed:
+        print(f"words placed on notes: {score.lyric_coverage:.0%} of the transcript")
+    else:
+        print(f"no words on the notes: {score.lyrics_reason}")
+    if len(notes) >= 600:
+        print("note: the analysis keeps at most 600 notes; a longer take is cut short")
+    print(f"wrote {stem}.score.json and {stem}.mid")
+    return 0
+
+
 def cmd_analyze_vocal(args) -> int:
     from .analysis import vocal_dna
     out_dir = args.out or CFG.paths.vocal_dna
@@ -294,6 +335,14 @@ def main(argv=None) -> int:
                     help="skip stem separation (much faster, lower quality renders)")
     ab.add_argument("--force", action="store_true", help="re-analyse cached beats")
     ab.set_defaults(func=cmd_analyze_beats)
+
+    sc = sub.add_parser("score", help="write a take as a score (JSON + MIDI)")
+    sc.add_argument("--vocal", required=True)
+    sc.add_argument("--out", default=None, help="directory for the score files")
+    sc.add_argument("--bpm", type=float, default=None, help="known tempo")
+    sc.add_argument("--language", default=None, choices=["en", "hi", "pa"],
+                    help="what the words are in")
+    sc.set_defaults(func=cmd_score)
 
     av = sub.add_parser("analyze-vocal", help="build vocal DNA")
     av.add_argument("--vocal", required=True)

@@ -20,14 +20,17 @@ Two things follow from that, and both are the point:
     operation on a waveform.
 """
 
+from .lyric_align import assign_words
 from .plan import (
     INAUDIBLE_CENTS, KEPT_GESTURE, KEPT_IN_TUNE, KEPT_MELISMA,
     KEPT_NO_TARGET, KEPT_TOO_FAR, TUNED,
-    NoteTarget, PerformancePlan, build, pitch_targets, snap_to_grid,
+    NoteTarget, PerformancePlan, as_performed, build, pitch_targets, snap_to_grid,
 )
+from .score import Score, build_score, to_midi
 
 __all__ = [
     "NoteTarget", "PerformancePlan", "build", "pitch_targets", "snap_to_grid",
+    "Score", "build_score", "to_midi", "assign_words", "as_performed",
     "TUNED", "KEPT_GESTURE", "KEPT_MELISMA", "KEPT_IN_TUNE", "KEPT_TOO_FAR",
     "KEPT_NO_TARGET", "INAUDIBLE_CENTS",
 ]
